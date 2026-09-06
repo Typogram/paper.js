@@ -29,7 +29,10 @@ var __options = {
     svg: true,
     booleanOperations: true,
     nativeContains: false,
-    paperScript: true
+    paperScript: true,
+    // Include the opt-in GPU (WebGL2) rendering backend. It is never selected
+    // implicitly, so this only affects the size of the bundle.
+    gpu: true
 };
 
 // Export for use in Gulp.js

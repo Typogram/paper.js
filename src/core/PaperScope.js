@@ -52,7 +52,12 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
             applyMatrix: true,
             insertItems: true,
             handleSize: 4,
-            hitTolerance: 0
+            hitTolerance: 0,
+            // The rasterizer that new views use, unless the element opts into
+            // a different one through a `data-paper-renderer` attribute:
+            // 'canvas' (the default), 'webgl', or 'auto' to prefer the GPU
+            // renderer wherever it is available. See View.create().
+            renderer: 'canvas'
         });
         this.project = null;
         this.projects = [];

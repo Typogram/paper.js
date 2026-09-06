@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GL renderer benchmark</title>
+<script type="text/javascript" src="../../dist/paper-gl.js"></script>
+<style>body { margin: 0; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="bench" width="800" height="800"></canvas>
+<script type="text/javascript">
+// Builds a scene of `count` items and times a number of full redraws. Every
+// frame rotates the whole scene so nothing can be cached away, which is the
+// case a GPU backend is supposed to be good at.
+window.bench = function(renderer, count, frames, kind) {
+    var canvas = document.getElementById('bench');
+    // A canvas can only ever hand out one kind of context, so start fresh.
+    var fresh = document.createElement('canvas');
+    fresh.width = canvas.width;
+    fresh.height = canvas.height;
+    fresh.id = 'bench';
+    if (renderer !== 'canvas')
+        fresh.setAttribute('data-paper-renderer', renderer);
+    canvas.parentNode.replaceChild(fresh, canvas);
+
+    var scope = new paper.PaperScope();
+    scope.setup(fresh);
+    if (scope.view._class !== (renderer === 'canvas' ? 'CanvasView' : 'GLView'))
+        return { error: 'got ' + scope.view._class };
+
+    var items = [];
+    for (var i = 0; i < count; i++) {
+        var x = 40 + (i * 37) % 720,
+            y = 40 + (i * 91) % 720,
+            item;
+        if (kind === 'star') {
+            item = new scope.Path.Star([x, y], 5, 6, 14);
+        } else {
+            item = new scope.Path.Circle([x, y], 10);
+        }
+        item.fillColor = new scope.Color((i % 32) / 32, 0.5, 0.8);
+        if (kind === 'stroke') {
+            item.strokeColor = '#202020';
+            item.strokeWidth = 2;
+        }
+        items.push(item);
+    }
+
+    var layer = scope.project.activeLayer,
+        // Warm up: first frame pays for shader compilation and layout.
+        start;
+    scope.view.update();
+    start = performance.now();
+    for (var frame = 0; frame < frames; frame++) {
+        layer.rotate(0.7, [400, 400]);
+        scope.view.markDirty ? scope.view.markDirty() : (scope.view._needsUpdate = true);
+        scope.view.update();
+    }
+    var elapsed = performance.now() - start;
+    scope.project.clear();
+    return {
+        renderer: renderer,
+        count: count,
+        frames: frames,
+        total: elapsed,
+        perFrame: elapsed / frames
+    };
+};
+</script>
+</body>
+</html>

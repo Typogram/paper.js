@@ -95,6 +95,16 @@ var paper = function(self, undefined) {
 /*#*/ include('view/View.js');
 /*#*/ include('view/CanvasView.js');
 
+/*#*/ if (__options.gpu) {
+/*#*/     include('gpu/GLDevice.js');
+/*#*/     include('gpu/GLShaders.js');
+/*#*/     include('gpu/GLPath.js');
+/*#*/     include('gpu/GLStroker.js');
+/*#*/     include('gpu/GLGradient.js');
+/*#*/     include('gpu/GLContext.js');
+/*#*/     include('view/GLView.js');
+/*#*/ } // __options.gpu
+
 /*#*/ include('event/Event.js');
 /*#*/ include('event/KeyEvent.js');
 /*#*/ include('event/Key.js');

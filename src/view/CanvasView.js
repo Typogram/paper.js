@@ -146,3 +146,7 @@ var CanvasView = View.extend(/** @lends CanvasView# */{
         return true;
     }
 });
+
+// The default rasterizer. Registered here rather than in View.js so that
+// View.create() has no compile-time knowledge of which backends exist.
+View.registerRenderer('canvas', CanvasView);

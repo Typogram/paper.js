@@ -1020,13 +1020,68 @@ var View = Base.extend(Emitter, /** @lends View# */{
         _viewsById: {},
         _id: 0,
 
+        /**
+         * The View subclasses that can rasterize a project, keyed by renderer
+         * name. Backends register themselves here so that View.create() stays
+         * agnostic of which ones were included in the build.
+         *
+         * @private
+         */
+        _renderers: {},
+
+        /**
+         * Registers a View subclass under a renderer name.
+         *
+         * @param {String} name the name matched against the element's
+         *     `data-paper-renderer` attribute and `paper.settings.renderer`
+         * @param {Function} ctor the View subclass to instantiate
+         * @param {Function} [isSupported] an optional test called before the
+         *     renderer is selected; if it returns false, View.create() falls
+         *     back to the canvas renderer
+         * @private
+         */
+        registerRenderer: function(name, ctor, isSupported) {
+            View._renderers[name] = {
+                ctor: ctor,
+                isSupported: isSupported
+            };
+        },
+
         create: function(project, element) {
             if (document && typeof element === 'string')
                 element = document.getElementById(element);
-            // Factory to provide the right View subclass for a given element.
-            // Produces only CanvasView or View items (for workers) for now:
-            var ctor = window ? CanvasView : View;
+            // Web-workers have no DOM to draw into.
+            if (!window)
+                return new View(project, element);
+            var renderers = View._renderers,
+                // A per-element attribute wins over the global setting, so
+                // that a single canvas can opt in without affecting others.
+                name = element && element.getAttribute
+                        && PaperScope.getAttribute(element, 'renderer')
+                    || paper.settings.renderer
+                    || 'canvas',
+                ctor;
+            if (name === 'auto') {
+                // Prefer the GPU renderer when it is both built in and
+                // available, but never fail if it is not.
+                name = 'webgl';
+                if (!View._isSupported(name))
+                    name = 'canvas';
+            } else if (name !== 'canvas' && !View._isSupported(name)) {
+                if (window.console && console.warn) {
+                    console.warn('paper.js: the "' + name + '" renderer is '
+                            + 'not available, falling back to "canvas".');
+                }
+                name = 'canvas';
+            }
+            ctor = (renderers[name] || renderers.canvas).ctor;
             return new ctor(project, element);
+        },
+
+        _isSupported: function(name) {
+            var renderer = View._renderers[name];
+            return !!renderer
+                    && (!renderer.isSupported || renderer.isSupported());
         }
     }
 },

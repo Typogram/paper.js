@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GL renderer comparison</title>
+<script type="text/javascript">
+// The bundle is selectable so the same scenes can be replayed against a
+// different build, which is how test/gl/regression.js checks that the canvas
+// renderer's output did not move.
+document.write('<script src="'
+        + (/[?&]bundle=([^&]+)/.exec(location.search)
+            ? decodeURIComponent(RegExp.$1)
+            : '../../dist/paper-gl.js')
+        + '"><\/script>');
+</script>
+<style>
+    body { margin: 0; font: 12px sans-serif; background: #fff; }
+    .pair { display: flex; }
+    canvas { background: #fff; }
+</style>
+</head>
+<body>
+<div class="pair">
+    <canvas id="canvas2d" width="400" height="400"></canvas>
+    <canvas id="canvasgl" width="400" height="400"
+            data-paper-renderer="webgl"></canvas>
+</div>
+<script type="text/javascript">
+// Builds the same scene twice, once through each renderer, so the two can be
+// diffed pixel by pixel. Scenes are named so a failure points at a feature.
+var scenes = {
+    fill: function(paper) {
+        var path = new paper.Path.Circle([120, 120], 80);
+        path.fillColor = '#e04040';
+        var star = new paper.Path.Star([260, 260], 6, 30, 70);
+        star.fillColor = '#3070d0';
+    },
+
+    evenodd: function(paper) {
+        // Self-intersecting star: the winding rule has to be honoured.
+        var star = new paper.Path.Star([200, 200], 5, 60, 150);
+        star.fillColor = '#207020';
+        star.fillRule = 'evenodd';
+    },
+
+    nonzero: function(paper) {
+        var star = new paper.Path.Star([200, 200], 5, 60, 150);
+        star.fillColor = '#207020';
+        star.fillRule = 'nonzero';
+    },
+
+    compound: function(paper) {
+        // Reversing the inner contour makes the winding cancel, which is the
+        // only thing that produces a hole under the nonzero rule. Both
+        // contours must reach the same stencil pass for this to work.
+        var outer = new paper.Path.Circle([200, 200], 150),
+            inner = new paper.Path.Circle([200, 200], 70);
+        inner.reverse();
+        var compound = new paper.CompoundPath({ children: [outer, inner] });
+        compound.fillColor = '#803090';
+    },
+
+    compoundEvenOdd: function(paper) {
+        // The same hole via the even-odd rule, with both contours wound the
+        // same way, which exercises the other stencil configuration.
+        var outer = new paper.Path.Circle([200, 200], 150),
+            inner = new paper.Path.Circle([200, 200], 70),
+            compound = new paper.CompoundPath({ children: [outer, inner] });
+        compound.fillColor = '#307090';
+        compound.fillRule = 'evenodd';
+    },
+
+    stroke: function(paper) {
+        var path = new paper.Path();
+        path.strokeColor = '#202020';
+        path.strokeWidth = 14;
+        path.strokeJoin = 'round';
+        path.strokeCap = 'round';
+        path.add([50, 320], [130, 90], [210, 320], [290, 90], [360, 320]);
+        var closed = new paper.Path.Rectangle([60, 40], [120, 60]);
+        closed.strokeColor = '#c05000';
+        closed.strokeWidth = 10;
+        closed.strokeJoin = 'miter';
+    },
+
+    strokeAndFill: function(paper) {
+        var path = new paper.Path.Circle([200, 200], 120);
+        path.fillColor = '#f0c000';
+        path.strokeColor = '#404040';
+        path.strokeWidth = 12;
+    },
+
+    opacity: function(paper) {
+        var a = new paper.Path.Circle([160, 200], 100);
+        a.fillColor = '#d02020';
+        a.opacity = 0.5;
+        var b = new paper.Path.Circle([240, 200], 100);
+        b.fillColor = '#2020d0';
+        b.opacity = 0.5;
+    },
+
+    transform: function(paper) {
+        for (var i = 0; i < 8; i++) {
+            var rect = new paper.Path.Rectangle([170, 170], [60, 60]);
+            rect.fillColor = new paper.Color(i / 8, 0.4, 0.7);
+            rect.rotate(i * 22.5, [200, 200]);
+            rect.scale(1 + i * 0.12, [200, 200]);
+            rect.opacity = 0.35;
+        }
+    },
+
+    gradient: function(paper) {
+        var rect = new paper.Path.Rectangle([40, 40], [150, 320]);
+        rect.fillColor = {
+            gradient: { stops: ['#ff0000', '#00ff00', '#0000ff'] },
+            origin: [40, 40],
+            destination: [40, 360]
+        };
+        var circle = new paper.Path.Circle([280, 200], 100);
+        circle.fillColor = {
+            gradient: { stops: ['#ffffff', '#202080'], radial: true },
+            origin: [280, 200],
+            destination: [380, 200]
+        };
+    },
+
+    clip: function(paper) {
+        var clip = new paper.Path.Circle([200, 200], 120),
+            content = new paper.Group({ children: [clip] });
+        content.clipped = true;
+        for (var i = 0; i < 10; i++) {
+            var bar = new paper.Path.Rectangle([40 + i * 34, 40], [22, 320]);
+            bar.fillColor = i % 2 ? '#e05020' : '#2050e0';
+            content.addChild(bar);
+        }
+    },
+
+    curves: function(paper) {
+        var path = new paper.Path();
+        path.fillColor = '#106080';
+        path.moveTo([60, 200]);
+        path.cubicCurveTo([60, 40], [340, 40], [340, 200]);
+        path.cubicCurveTo([340, 360], [60, 360], [60, 200]);
+        path.closePath();
+    }
+};
+
+function render(id, name) {
+    var scope = new paper.PaperScope();
+    scope.setup(document.getElementById(id));
+    scenes[name](scope);
+    scope.view.update();
+    return scope;
+}
+
+window.runScene = function(name) {
+    // Tear down any previous scopes so repeated runs stay independent.
+    if (window.__scopes) {
+        window.__scopes.forEach(function(scope) {
+            scope.project.clear();
+        });
+    }
+    window.__scopes = [render('canvas2d', name), render('canvasgl', name)];
+    return true;
+};
+
+function getPixels(id) {
+    var canvas = document.getElementById(id),
+        ctx = canvas.getContext('2d');
+    if (!ctx) {
+        // The GL canvas cannot hand out a 2D context, so copy it into one.
+        // Both paths then return unpremultiplied, top-down RGBA.
+        var copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        ctx = copy.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(canvas, 0, 0);
+    }
+    return Array.prototype.slice.call(
+            ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+}
+
+// Renders and reads back within a single task. The GL context is created with
+// preserveDrawingBuffer false, so its contents are discarded once the browser
+// composites the frame at the end of the current task; reading from a later
+// task would compare against an empty buffer.
+window.renderAndRead = function(name) {
+    window.runScene(name);
+    return [getPixels('canvas2d'), getPixels('canvasgl')];
+};
+
+window.rendererOf = function(id) {
+    var view = paper.View._views.filter(function(view) {
+        return view._element.id === id;
+    })[0];
+    return view && view._class;
+};
+</script>
+</body>
+</html>
