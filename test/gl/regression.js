@@ -13,7 +13,7 @@ var path = require('path'),
 (async function() {
     var baseline = path.resolve(process.argv[2]),
         candidate = path.resolve(process.argv[3]
-            || path.join(__dirname, '..', '..', 'dist', 'paper-gl.js')),
+            || path.join(__dirname, '..', '..', 'dist', 'paper-full.js')),
         browser = await chromium.launch({
             executablePath: process.env.CHROMIUM_PATH
                 || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',

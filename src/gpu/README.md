@@ -81,11 +81,13 @@ proper fix.
 
 ## Testing
 
-Build a bundle first — `gulp` 3 does not run on modern Node, so use the
-stand-in:
+`dist/paper-full.js` is committed on this branch, so the pages below work as
+checked out. After changing anything under `src/`, rebuild it — `gulp` 3 does
+not run on modern Node, so use the stand-in:
 
 ```sh
-node tools/build.js            # -> dist/paper-gl.js
+node tools/build.js           # -> dist/paper-full.js
+node tools/build.js --core    # -> dist/paper-core.js
 ```
 
 ```sh
