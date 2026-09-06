@@ -2,6 +2,8 @@ node_modules/
 /dist/*/
 /dist/*.min.js
 /dist/paperjs.zip
+/dist/paper-gl.js
+/test/gl/output/
 # Yarn
 .yarn/*
 !.yarn/cache
