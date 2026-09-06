@@ -79,6 +79,58 @@ Text currently rasterizes one bitmap per distinct run into a bounded cache. That
 is exact but memory-hungry for highly dynamic text; a shared glyph atlas is the
 proper fix.
 
+## Using this fork in an app
+
+`dist/paper-full.js` is committed on this branch, so the package needs no build
+step at install time. The public API is identical to upstream 0.12.18, so an
+app's existing `import paper from 'paper'` keeps working unchanged.
+
+**Tarball (recommended).** A git dependency does not work reliably: npm installs
+a git dependency's devDependencies, and `canvas` — pulled in transitively via
+`jsdom` — needs Cairo headers and aborts the install wherever they are missing.
+Packing sidesteps devDependencies entirely:
+
+```sh
+git clone -b <this-branch> https://github.com/Typogram/paper.js
+cd paper.js && npm pack          # -> paper-0.12.18.tgz
+```
+
+Then in the app, commit the tarball (or host it) and point at it:
+
+```json
+"dependencies": {
+  "paper": "file:vendor/paper-0.12.18.tgz"
+}
+```
+
+**Git dependency**, if `canvas` builds in every environment that runs
+`npm install` (`brew install cairo pango` on macOS,
+`apt install libcairo2-dev libpango1.0-dev` on Debian):
+
+```json
+"paper": "github:Typogram/paper.js#<this-branch>"
+```
+
+### Turning the renderer on
+
+Nothing changes until a view opts in, so the switch can be made one canvas at a
+time and reverted instantly:
+
+```svelte
+<canvas bind:this={canvasElement} data-paper-renderer="webgl"></canvas>
+```
+
+or globally, before any `setup()` call:
+
+```js
+paper.settings.renderer = 'auto';  // GPU where WebGL2 exists, canvas otherwise
+```
+
+`paper.settings` is per-`PaperScope`, so an app that creates several scopes has
+to set it on each one, or use the attribute.
+
+Read the performance section below before switching anything user-facing on.
+
 ## Testing
 
 `dist/paper-full.js` is committed on this branch, so the pages below work as
