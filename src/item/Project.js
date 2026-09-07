@@ -862,7 +862,7 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         }
     },
 
-    draw: function(ctx, matrix, pixelRatio) {
+    draw: function(ctx, matrix, pixelRatio, viewSize) {
         // Increase the _updateVersion before the draw-loop. After that, items
         // that are visible will have their _updateVersion set to the new value.
         this._updateVersion++;
@@ -878,7 +878,19 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
                 // Tell the drawing routine that we want to keep _globalMatrix
                 // up to date. Item#rasterize() and Raster#getAverageColor()
                 // should not set this.
-                updateMatrix: true
+                updateMatrix: true,
+                // Lets Item#draw() skip items whose bounds fall entirely
+                // outside the visible area, which matters once a scene has
+                // many more items than are ever onscreen at once (panning a
+                // large canvas is the case this exists for). Optional and
+                // padded, so callers that build their own param without it -
+                // #rasterize(), Raster#getAverageColor() - are unaffected,
+                // and items just past the edge are not skipped only to pop
+                // in in the middle of a drag or scale animation.
+                viewBounds: viewSize
+                        ? new Rectangle(new Point(), viewSize).expand(
+                            Math.max(viewSize.width, viewSize.height) * 0.1)
+                        : null
             });
         for (var i = 0, l = children.length; i < l; i++) {
             children[i].draw(ctx, param);

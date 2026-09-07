@@ -4417,6 +4417,20 @@ new function() { // Injection scope for hit-test functions shared with project
         viewMatrix = viewMatrix ? viewMatrix.appended(globalMatrix)
                 : globalMatrix;
 
+        // Skip items entirely outside the visible area. With many more items
+        // in a scene than are ever onscreen at once, most of a frame's cost is
+        // otherwise spent producing pixels nobody sees - the case a large,
+        // pannable canvas runs into directly. Restricted to a plain top-level
+        // draw: param.clip marks the item as a clip mask, whose bounds do not
+        // govern what stays visible, and dontStart/dontFinish mark a
+        // CompoundPath child contributing to one shared outline rather than
+        // painting itself, so skipping it would corrupt that outline even
+        // though the child alone looks safely offscreen.
+        if (param.viewBounds && !param.clip && !param.dontStart
+                && !param.dontFinish
+                && !param.viewBounds.intersects(this.getStrokeBounds(viewMatrix)))
+            return;
+
         // Only keep track of transformation if told so. See Project#draw()
         matrices.push(globalMatrix);
         if (param.updateMatrix) {

@@ -898,6 +898,7 @@ var GLContext = Base.extend(new function() {
             device.uploadColored(cover.data, count);
             gl.drawArrays(gl.TRIANGLES, 0, count);
             this._drawCalls++;
+            this._vertices += count;
         },
 
         /**

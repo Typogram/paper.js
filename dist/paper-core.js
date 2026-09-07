@@ -7058,7 +7058,7 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         }
     },
 
-    draw: function(ctx, matrix, pixelRatio) {
+    draw: function(ctx, matrix, pixelRatio, viewSize) {
         // Increase the _updateVersion before the draw-loop. After that, items
         // that are visible will have their _updateVersion set to the new value.
         this._updateVersion++;
@@ -7074,7 +7074,19 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
                 // Tell the drawing routine that we want to keep _globalMatrix
                 // up to date. Item#rasterize() and Raster#getAverageColor()
                 // should not set this.
-                updateMatrix: true
+                updateMatrix: true,
+                // Lets Item#draw() skip items whose bounds fall entirely
+                // outside the visible area, which matters once a scene has
+                // many more items than are ever onscreen at once (panning a
+                // large canvas is the case this exists for). Optional and
+                // padded, so callers that build their own param without it -
+                // #rasterize(), Raster#getAverageColor() - are unaffected,
+                // and items just past the edge are not skipped only to pop
+                // in in the middle of a drag or scale animation.
+                viewBounds: viewSize
+                        ? new Rectangle(new Point(), viewSize).expand(
+                            Math.max(viewSize.width, viewSize.height) * 0.1)
+                        : null
             });
         for (var i = 0, l = children.length; i < l; i++) {
             children[i].draw(ctx, param);
@@ -11514,6 +11526,20 @@ new function() { // Injection scope for hit-test functions shared with project
         // NOTE: viewMatrix is only provided if it isn't the identity matrix.
         viewMatrix = viewMatrix ? viewMatrix.appended(globalMatrix)
                 : globalMatrix;
+
+        // Skip items entirely outside the visible area. With many more items
+        // in a scene than are ever onscreen at once, most of a frame's cost is
+        // otherwise spent producing pixels nobody sees - the case a large,
+        // pannable canvas runs into directly. Restricted to a plain top-level
+        // draw: param.clip marks the item as a clip mask, whose bounds do not
+        // govern what stays visible, and dontStart/dontFinish mark a
+        // CompoundPath child contributing to one shared outline rather than
+        // painting itself, so skipping it would corrupt that outline even
+        // though the child alone looks safely offscreen.
+        if (param.viewBounds && !param.clip && !param.dontStart
+                && !param.dontFinish
+                && !param.viewBounds.intersects(this.getStrokeBounds(viewMatrix)))
+            return;
 
         // Only keep track of transformation if told so. See Project#draw()
         matrices.push(globalMatrix);
@@ -29602,7 +29628,7 @@ var CanvasView = View.extend(/** @lends CanvasView# */{
             size = this._viewSize;
         ctx.clearRect(0, 0, size.width + 1, size.height + 1);
         if (project)
-            project.draw(ctx, this._matrix, this._pixelRatio);
+            project.draw(ctx, this._matrix, this._pixelRatio, this._viewSize);
         this._needsUpdate = false;
         return true;
     }
@@ -31448,6 +31474,7 @@ var GLContext = Base.extend(new function() {
             device.uploadColored(cover.data, count);
             gl.drawArrays(gl.TRIANGLES, 0, count);
             this._drawCalls++;
+            this._vertices += count;
         },
 
         /**
@@ -32205,7 +32232,7 @@ var GLView = View.extend(/** @lends GLView# */{
             // Match the HiDPI upscaling CanvasView applies to its context.
             if (this._pixelRatio !== 1)
                 ctx.scale(this._pixelRatio, this._pixelRatio);
-            project.draw(ctx, this._matrix, this._pixelRatio);
+            project.draw(ctx, this._matrix, this._pixelRatio, this._viewSize);
             ctx.restore();
         }
         // Nothing may stay queued past the end of a frame.

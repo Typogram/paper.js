@@ -164,6 +164,25 @@ var scenes = {
         }
     },
 
+    // Scatters items across an area far larger than the canvas, then pans
+    // the view so only a shifted subset is visible - the case viewport
+    // culling exists for. This is the parity check for it: an item skipped
+    // one frame because it was offscreen has to render identically to one
+    // that was always onscreen once panned into view, and nothing culled
+    // may leave a stray mark behind.
+    panAndCull: function(paper) {
+        for (var i = 0; i < 3000; i++) {
+            var x = (i * 6151) % 2400 - 1000,
+                y = (i * 4813) % 2400 - 1000,
+                hue = (i * 37) % 360,
+                shape = i % 3 === 0
+                        ? new paper.Path.Star([x, y], 5, 5, 11)
+                        : new paper.Path.Circle([x, y], 5);
+            shape.fillColor = new paper.Color(hue / 360, 0.6, 0.65);
+        }
+        paper.view.translate([-450, -300]);
+    },
+
     curves: function(paper) {
         var path = new paper.Path();
         path.fillColor = '#106080';
