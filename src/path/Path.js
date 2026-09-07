@@ -372,6 +372,12 @@ var Path = PathItem.extend(/** @lends Path# */{
             coords = new Array(6);
         for (var i = 0, l = segments.length; i < l; i++)
             segments[i]._transformCoordinates(matrix, coords, true);
+        // Segment#_transformCoordinates writes the new coordinates straight
+        // into the points, bypassing the setters that would call _changed(),
+        // and Item#transform() then reports only Change.MATRIX. The geometry
+        // really did change though, so anything caching per-version derived
+        // data has to be told. See CurveLocation and GLContext#_tessellate.
+        this._version++;
         return true;
     },
 

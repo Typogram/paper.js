@@ -12,7 +12,12 @@
 // Builds a scene of `count` items and times a number of full redraws. Every
 // frame rotates the whole scene so nothing can be cached away, which is the
 // case a GPU backend is supposed to be good at.
-window.bench = function(renderer, count, frames, kind) {
+// `applyMatrix` decides whether Paper.js bakes a transform into the segment
+// coordinates (its default, true) or keeps it as a matrix on the item. It is
+// the single biggest factor for the GL backend's geometry cache: baking
+// rewrites the segments, bumps Path#_version and invalidates the cache every
+// frame, while keeping the matrix leaves the tessellation reusable.
+window.bench = function(renderer, count, frames, kind, applyMatrix, cache) {
     var canvas = document.getElementById('bench');
     // A canvas can only ever hand out one kind of context, so start fresh.
     var fresh = document.createElement('canvas');
@@ -24,9 +29,13 @@ window.bench = function(renderer, count, frames, kind) {
     canvas.parentNode.replaceChild(fresh, canvas);
 
     var scope = new paper.PaperScope();
+    scope.settings.applyMatrix = applyMatrix !== false;
     scope.setup(fresh);
     if (scope.view._class !== (renderer === 'canvas' ? 'CanvasView' : 'GLView'))
         return { error: 'got ' + scope.view._class };
+    // Lets the geometry cache be measured against an otherwise identical run.
+    if (cache === false && scope.view._context)
+        scope.view._context._cacheEnabled = false;
 
     var items = [];
     for (var i = 0; i < count; i++) {
@@ -43,10 +52,15 @@ window.bench = function(renderer, count, frames, kind) {
             item.strokeColor = '#202020';
             item.strokeWidth = 2;
         }
+        if (applyMatrix === false)
+            item.applyMatrix = false;
         items.push(item);
     }
 
-    var layer = scope.project.activeLayer,
+    var layer = scope.project.activeLayer;
+    if (applyMatrix === false)
+        layer.applyMatrix = false;
+    var
         // Warm up: first frame pays for shader compilation and layout.
         start;
     scope.view.update();

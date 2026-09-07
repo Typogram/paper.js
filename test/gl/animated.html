@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Animated renderer comparison</title>
+<script type="text/javascript" src="../../dist/paper-full.js"></script>
+<style>body { margin: 0; } .pair { display: flex; }</style>
+</head>
+<body>
+<div class="pair">
+    <canvas id="canvas2d" width="360" height="360"></canvas>
+    <canvas id="canvasgl" width="360" height="360"
+            data-paper-renderer="webgl"></canvas>
+</div>
+<script type="text/javascript">
+function buildAndSpin(id, kind, applyMatrix, frames) {
+    var canvas = document.getElementById(id),
+        // A canvas only ever yields one kind of context, so start fresh each
+        // run rather than reusing one that already served a renderer.
+        fresh = canvas.cloneNode(false);
+    canvas.parentNode.replaceChild(fresh, canvas);
+    fresh.id = id;
+
+    var scope = new paper.PaperScope();
+    scope.settings.applyMatrix = applyMatrix;
+    scope.setup(fresh);
+    scope.activate();
+
+    var items = [];
+    for (var i = 0; i < 24; i++) {
+        var item = new scope.Path.Star([80 + (i * 53) % 200,
+                80 + (i * 97) % 200], 5, 9, 20);
+        if (kind === 'stroke') {
+            item.strokeColor = '#204080';
+            item.strokeWidth = 3;
+        } else {
+            item.fillColor = '#c04030';
+        }
+        if (!applyMatrix)
+            item.applyMatrix = false;
+        items.push(item);
+    }
+    scope.view.update();
+    for (var f = 0; f < frames; f++) {
+        // Per-item transforms: with applyMatrix on, this rewrites every
+        // segment in place, which a geometry cache must not miss.
+        for (var i = 0; i < items.length; i++) {
+            items[i].rotate(7, [180, 180]);
+            items[i].scale(1.01, [180, 180]);
+        }
+        scope.view._needsUpdate = true;
+        scope.view.update();
+    }
+    return scope;
+}
+
+function readPixels(id) {
+    var canvas = document.getElementById(id),
+        ctx = canvas.getContext('2d');
+    if (!ctx) {
+        var copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        ctx = copy.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(canvas, 0, 0);
+    }
+    return Array.prototype.slice.call(
+            ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+}
+
+// Renders and reads back in one task: the GL context is created with
+// preserveDrawingBuffer false, so its contents are gone after the frame is
+// composited at the end of the current task.
+window.renderAnimated = function(kind, applyMatrix, frames) {
+    var a = buildAndSpin('canvas2d', kind, applyMatrix, frames),
+        b = buildAndSpin('canvasgl', kind, applyMatrix, frames),
+        result = [readPixels('canvas2d'), readPixels('canvasgl')];
+    a.project.clear();
+    b.project.clear();
+    return result;
+};
+</script>
+</body>
+</html>

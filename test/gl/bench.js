@@ -34,7 +34,15 @@ var COUNTS = {
         console.log('pageerror: ' + error.message);
     });
 
-    for (var k = 0; k < 2; k++) {
+    for (var m = 0; m < 2; m++) {
+      var applyMatrix = m === 0;
+      console.log('\n=== applyMatrix: ' + applyMatrix + ' ==='
+              + (applyMatrix
+                  ? '  (Paper.js default: a transform rewrites every segment,'
+                      + ' so cached geometry is invalidated each frame)'
+                  : '  (transform kept as a matrix, so the GL backend can'
+                      + ' reuse its tessellation)'));
+      for (var k = 0; k < 2; k++) {
         var kind = ['circle', 'stroke'][k];
         console.log('\n' + kind + ' items, ' + FRAMES
                 + ' full redraws per measurement');
@@ -47,8 +55,9 @@ var COUNTS = {
                 var renderer = ['canvas', 'webgl'][r];
                 await page.goto(url);
                 results[renderer] = await page.evaluate(function(args) {
-                    return window.bench(args[0], args[1], args[2], args[3]);
-                }, [renderer, count, FRAMES, kind]);
+                    return window.bench(args[0], args[1], args[2], args[3],
+                            args[4]);
+                }, [renderer, count, FRAMES, kind, applyMatrix]);
             }
             if (results.canvas.error || results.webgl.error) {
                 console.log('  ' + count + ' error: '
@@ -62,6 +71,7 @@ var COUNTS = {
                     + (b.toFixed(2) + ' ms').padStart(12)
                     + ((a / b).toFixed(2) + 'x').padStart(10));
         }
+      }
     }
     await browser.close();
 })();

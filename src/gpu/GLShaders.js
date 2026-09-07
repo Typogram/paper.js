@@ -26,10 +26,18 @@ var GLShaders = /** @lends GLShaders */{
         '#version 300 es',
         'layout(location = 0) in vec2 a_position;',
         'uniform vec2 u_resolution;',
+        // The item's transform. Geometry cached across frames is stored in the
+        // space it was recorded in, so a moving or rotating item costs one
+        // uniform update here instead of a full re-tessellation on the CPU.
+        // Draws that submit device-space coordinates pass the identity.
+        'uniform mat3 u_matrix;',
         'out vec2 v_position;',
         'void main() {',
-        '    v_position = a_position;',
-        '    vec2 clip = a_position / u_resolution * 2.0 - 1.0;',
+        '    vec2 pos = (u_matrix * vec3(a_position, 1.0)).xy;',
+        // Gradients sample in device space, so v_position must be the
+        // transformed position, not the raw attribute.
+        '    v_position = pos;',
+        '    vec2 clip = pos / u_resolution * 2.0 - 1.0;',
         '    gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);',
         '}'
     ].join('\n'),

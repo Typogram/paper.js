@@ -41,7 +41,21 @@ var GLContext = Base.extend(new function() {
     // counter of the shape currently being rasterized.
     var CLIP_BIT = 0x80,
         SCRATCH_MASK = 0x7f,
+        // Passed to the vertex shader for draws whose coordinates are already
+        // in device space (cover quads, clips, images, text).
+        IDENTITY_MAT3 = [1, 0, 0, 0, 1, 0, 0, 0, 1],
+        // Flattening tolerance, in device pixels. Paths are recorded in their
+        // own space now, so the tolerance is divided by the transform's scale
+        // to keep the on-screen result identical.
+        BASE_TOLERANCE = 0.2,
         colorCache = {};
+
+    // The average scale a matrix applies, used both to pick a flattening
+    // tolerance and to convert stroke widths between spaces.
+    function matrixScale(m) {
+        return (Math.sqrt(m._a * m._a + m._b * m._b)
+                + Math.sqrt(m._c * m._c + m._d * m._d)) / 2;
+    }
 
     // Parses the colour strings Color#toCSS() produces, falling back to a
     // scratch 2D context for any other CSS syntax a user may set directly.
@@ -130,6 +144,18 @@ var GLContext = Base.extend(new function() {
             this._activeClip = this._state.clip;
             this._clipping = false;
             this._warned = {};
+            // Tessellated geometry, keyed by item id. Only Path carries the
+            // _version counter this relies on; every other item type falls
+            // back to re-tessellating each frame, exactly as before.
+            this._geometry = {};
+            this._geometryCount = 0;
+            // Diagnostics: how often cached tessellation is reused. A scene
+            // animated with applyMatrix left on will show ~0 hits, because
+            // Paper.js rewrites the segments and the geometry really did
+            // change. See src/gpu/README.md.
+            this._cacheHits = 0;
+            this._cacheMisses = 0;
+            this._currentItem = null;
             this._textures = {};
             this._textCache = {};
             this._textCacheSize = 0;
@@ -205,37 +231,37 @@ var GLContext = Base.extend(new function() {
 
         beginPath: function() {
             this._path.reset();
+            // Curves are flattened in the space they are recorded in, so the
+            // tolerance has to be scaled to still mean 0.2 device pixels.
+            this._path._tolerance = BASE_TOLERANCE
+                    / Math.max(matrixScale(this._state.matrix), 1e-6);
+            this._cacheable = true;
         },
 
         closePath: function() {
             this._path.close();
         },
 
+        // Path commands record coordinates exactly as given, in whatever
+        // space the CTM describes, and the transform is applied later by the
+        // vertex shader. That is what lets the tessellation be reused when an
+        // item only moves. It relies on the CTM staying constant for the
+        // duration of one path, which Paper.js guarantees: Item#draw applies
+        // the item's matrix to the context once, before calling _draw().
         moveTo: function(x, y) {
-            var m = this._state.matrix;
-            this._path.moveTo(m._a * x + m._c * y + m._tx,
-                    m._b * x + m._d * y + m._ty);
+            this._path.moveTo(x, y);
         },
 
         lineTo: function(x, y) {
-            var m = this._state.matrix;
-            this._path.lineTo(m._a * x + m._c * y + m._tx,
-                    m._b * x + m._d * y + m._ty);
+            this._path.lineTo(x, y);
         },
 
         bezierCurveTo: function(x1, y1, x2, y2, x3, y3) {
-            var m = this._state.matrix;
-            this._path.cubicTo(
-                    m._a * x1 + m._c * y1 + m._tx, m._b * x1 + m._d * y1 + m._ty,
-                    m._a * x2 + m._c * y2 + m._tx, m._b * x2 + m._d * y2 + m._ty,
-                    m._a * x3 + m._c * y3 + m._tx, m._b * x3 + m._d * y3 + m._ty);
+            this._path.cubicTo(x1, y1, x2, y2, x3, y3);
         },
 
         quadraticCurveTo: function(x1, y1, x2, y2) {
-            var m = this._state.matrix;
-            this._path.quadraticTo(
-                    m._a * x1 + m._c * y1 + m._tx, m._b * x1 + m._d * y1 + m._ty,
-                    m._a * x2 + m._c * y2 + m._tx, m._b * x2 + m._d * y2 + m._ty);
+            this._path.quadraticTo(x1, y1, x2, y2);
         },
 
         rect: function(x, y, width, height) {
@@ -312,48 +338,122 @@ var GLContext = Base.extend(new function() {
             return triangles;
         },
 
+        /**
+         * Returns tessellated geometry for the current path, reusing the
+         * previous frame's result when the item's geometry has not changed.
+         *
+         * Paper.js bumps Path#_version only on ChangeFlag.SEGMENTS, so a pure
+         * transform (Change.MATRIX) leaves it alone. That is exactly the
+         * signal needed here: an item that merely moves, rotates or scales
+         * keeps its cached triangles and pays only for a uniform update, while
+         * an edited path re-tessellates. `kind` separates the fill and stroke
+         * entries, and `variant` carries any style the tessellation depends on.
+         *
+         * Falls through to plain tessellation when there is no current item,
+         * when the item type has no _version (everything but Path), or when
+         * the path is a scratch one, so behaviour is unchanged in those cases.
+         */
+        _tessellate: function(kind, variant, build) {
+            var item = this._currentItem,
+                // Instance flag so the cache can be toggled on a live view
+                // for measurement; undefined means enabled.
+                version = this._cacheEnabled !== false && item
+                        ? item._version : undefined;
+            // No item (selection handles, scratch paths) or an item type
+            // without a version counter (everything but Path) tessellates
+            // every frame, exactly as before.
+            if (!this._cacheable || version === undefined)
+                return build();
+            var key = item._id,
+                entry = this._geometry[key];
+            if (entry && entry.version === version && entry[kind]
+                    && entry[kind].variant === variant) {
+                this._cacheHits++;
+                return entry[kind].data;
+            }
+            this._cacheMisses++;
+            if (!entry || entry.version !== version) {
+                if (!entry) {
+                    // Bound the cache rather than tracking per-entry ages: the
+                    // scene graph is the natural upper bound, and a wholesale
+                    // clear costs one re-tessellation of what is still visible.
+                    if (this._geometryCount > 20000) {
+                        this._geometry = {};
+                        this._geometryCount = 0;
+                    }
+                    this._geometryCount++;
+                }
+                entry = this._geometry[key] = { version: version };
+            }
+            var data = build();
+            entry[kind] = { variant: variant, data: data };
+            return data;
+        },
+
         fill: function(fillRule) {
-            this._stencilThenCover(this._getFillTriangles(this._path),
-                    this._path.getBounds(1),
-                    fillRule === 'evenodd' ? 'evenodd' : 'nonzero',
-                    this._getPaint(this._state.fillStyle));
+            var path = this._path,
+                rule = fillRule === 'evenodd' ? 'evenodd' : 'nonzero',
+                that = this,
+                geometry = this._tessellate('fill', rule, function() {
+                    return {
+                        triangles: that._getFillTriangles(path),
+                        bounds: path.getBounds(1)
+                    };
+                });
+            this._stencilThenCover(geometry.triangles, geometry.bounds, rule,
+                    this._getPaint(this._state.fillStyle), this._state.matrix);
         },
 
         stroke: function() {
-            var state = this._state;
+            var state = this._state,
+                path = this._path;
             if (state.lineDash && state.lineDash.length) {
                 this._warn('dash',
                         'Dashed strokes (setLineDash) are not implemented yet.');
             }
-            var m = state.matrix,
-                // Strokes are expanded in device space, so the width follows
-                // the CTM. A non-uniform scale cannot be expressed as a single
-                // width; the average is exact for the uniform case, which is
-                // what Item#draw guarantees whenever strokes do not scale.
-                scale = (Math.sqrt(m._a * m._a + m._b * m._b)
-                        + Math.sqrt(m._c * m._c + m._d * m._d)) / 2,
-                width = state.lineWidth * scale;
-            this._stencilThenCover(
-                    GLStroker.expand(this._path, width, state.lineCap,
-                        state.lineJoin, state.miterLimit),
-                    this._path.getBounds(width / 2 + 1), 'union',
-                    this._getPaint(state.strokeStyle));
+            // The stroke is expanded in the path's own space and scaled by the
+            // shader along with everything else, so the width is used as given
+            // rather than pre-multiplied by the CTM.
+            var width = state.lineWidth,
+                cap = state.lineCap,
+                join = state.lineJoin,
+                miterLimit = state.miterLimit,
+                // Expansion geometry depends on these, and a style change does
+                // not bump _version, so they belong in the cache key.
+                variant = width + ':' + cap + ':' + join + ':' + miterLimit,
+                geometry = this._tessellate('stroke', variant, function() {
+                    return {
+                        triangles: GLStroker.expand(path, width, cap, join,
+                                miterLimit),
+                        bounds: path.getBounds(width / 2 + 1)
+                    };
+                });
+            this._stencilThenCover(geometry.triangles, geometry.bounds, 'union',
+                    this._getPaint(state.strokeStyle), state.matrix);
         },
 
         fillRect: function(x, y, width, height) {
-            var path = this._path;
+            var path = this._path,
+                cacheable = this._cacheable;
+            // A scratch path must never be stored under the current item's
+            // key, or it would be replayed in place of that item's geometry.
             this._path = new GLPath();
+            this._cacheable = false;
             this.rect(x, y, width, height);
             this.fill();
             this._path = path;
+            this._cacheable = cacheable;
         },
 
         strokeRect: function(x, y, width, height) {
-            var path = this._path;
+            var path = this._path,
+                cacheable = this._cacheable;
             this._path = new GLPath();
+            this._cacheable = false;
             this.rect(x, y, width, height);
             this.stroke();
             this._path = path;
+            this._cacheable = cacheable;
         },
 
         clearRect: function(x, y, width, height) {
@@ -389,19 +489,34 @@ var GLContext = Base.extend(new function() {
         },
 
         clip: function(fillRule) {
-            var state = this._state;
+            var state = this._state,
+                m = state.matrix,
+                local = this._getFillTriangles(this._path),
+                triangles = new Array(local.length);
+            // A clip outlives the transform that defined it and is rebuilt
+            // later against whatever matrix is current then, so bake this one
+            // in now and keep clip geometry in device space.
+            for (var i = 0, l = local.length; i < l; i += 2) {
+                var x = local[i],
+                    y = local[i + 1];
+                triangles[i] = m._a * x + m._c * y + m._tx;
+                triangles[i + 1] = m._b * x + m._d * y + m._ty;
+            }
             // Copy on write, so a save() taken before this clip still refers
             // to the old configuration and restore() stays free.
             state.clip = state.clip.concat([{
-                triangles: this._getFillTriangles(this._path),
+                triangles: triangles,
                 rule: fillRule === 'evenodd' ? 'evenodd' : 'nonzero'
             }]);
         },
 
         isPointInPath: function(x, y, fillRule) {
-            var m = this._state.matrix,
-                px = m._a * x + m._c * y + m._tx,
-                py = m._b * x + m._d * y + m._ty,
+            // The path is recorded untransformed, and Paper.js only calls this
+            // through PathItem#_contains, which draws into a fresh context
+            // with an identity transform and passes a point in that same
+            // space, so the coordinates are compared as given.
+            var px = x,
+                py = y,
                 contours = this._path.contours,
                 winding = 0,
                 crossings = 0;
@@ -460,7 +575,7 @@ var GLContext = Base.extend(new function() {
             device.gl.drawArrays(device.gl.TRIANGLES, 0, 6);
         },
 
-        _useProgram: function(name, fragmentSource) {
+        _useProgram: function(name, fragmentSource, matrix) {
             var device = this._device,
                 entry = device.getProgram(name, GLShaders.vertex,
                         fragmentSource),
@@ -468,6 +583,8 @@ var GLContext = Base.extend(new function() {
             device.useProgram(entry);
             device.gl.uniform2f(device.getUniform(entry, 'u_resolution'),
                     size.width, size.height);
+            device.gl.uniformMatrix3fv(device.getUniform(entry, 'u_matrix'),
+                    false, matrix ? toMat3(matrix) : IDENTITY_MAT3);
             return entry;
         },
 
@@ -487,6 +604,8 @@ var GLContext = Base.extend(new function() {
                     // that was active when the gradient was created.
                     m = this._state.matrix,
                     scale = Math.sqrt(Math.abs(m._a * m._d - m._b * m._c));
+                // The cover quad is already in device space; only the gradient
+                // *geometry* below is mapped through the CTM.
                 entry = this._useProgram('gradient', GLShaders.gradient);
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, gradient._getRamp(device));
@@ -512,7 +631,12 @@ var GLContext = Base.extend(new function() {
             }
         },
 
-        _stencilThenCover: function(triangles, bounds, rule, paint) {
+        /**
+         * @param {Number[]} triangles coverage geometry, in the space `matrix`
+         *     maps to device space (identity when already in device space)
+         * @param {Number[]} bounds the geometry's bounds, in that same space
+         */
+        _stencilThenCover: function(triangles, bounds, rule, paint, matrix) {
             if (!triangles.length || !bounds)
                 return;
             var device = this._device,
@@ -520,18 +644,36 @@ var GLContext = Base.extend(new function() {
                 size = device.getSize();
             this._checkComposite();
             this._syncClip();
-            var x0 = Math.max(0, Math.floor(bounds[0])),
-                y0 = Math.max(0, Math.floor(bounds[1])),
-                x1 = Math.min(size.width, Math.ceil(bounds[2])),
-                y1 = Math.min(size.height, Math.ceil(bounds[3]));
+            // The cover quad has to be in device space, so map the geometry's
+            // bounds through the matrix. A rotation makes the transformed box
+            // non-axis-aligned, hence all four corners rather than two.
+            var xs = [],
+                ys = [];
+            for (var i = 0; i < 4; i++) {
+                var bx = bounds[i & 1 ? 2 : 0],
+                    by = bounds[i & 2 ? 3 : 1];
+                if (matrix) {
+                    xs.push(matrix._a * bx + matrix._c * by + matrix._tx);
+                    ys.push(matrix._b * bx + matrix._d * by + matrix._ty);
+                } else {
+                    xs.push(bx);
+                    ys.push(by);
+                }
+            }
+            var x0 = Math.max(0, Math.floor(Math.min.apply(Math, xs))),
+                y0 = Math.max(0, Math.floor(Math.min.apply(Math, ys))),
+                x1 = Math.min(size.width, Math.ceil(Math.max.apply(Math, xs))),
+                y1 = Math.min(size.height, Math.ceil(Math.max.apply(Math, ys)));
             if (x1 <= x0 || y1 <= y0)
                 return;
             var quad = [x0, y0, x1, y1];
 
-            // Pass 1: accumulate coverage in the scratch stencil bits.
+            // Pass 1: accumulate coverage in the scratch stencil bits. The
+            // coverage geometry is transformed on the GPU; the cover pass
+            // below draws a device-space quad and so uses the identity.
             gl.enable(gl.STENCIL_TEST);
             gl.colorMask(false, false, false, false);
-            this._useProgram('none', GLShaders.none);
+            this._useProgram('none', GLShaders.none, matrix);
             this._setStencilRule(rule);
             this._drawTriangles(triangles);
 

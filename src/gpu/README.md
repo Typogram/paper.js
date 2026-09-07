@@ -145,6 +145,7 @@ node tools/build.js --core    # -> dist/paper-core.js
 ```sh
 node test/gl/run.js            # render every scene through both renderers and diff
 node test/gl/run.js --write-images
+node test/gl/animated.js        # drive transforms, then diff (catches stale caches)
 node test/gl/regression.js <baseline-bundle>   # canvas output must not move
 node test/gl/bench.js          # canvas vs GL timings
 ```
@@ -161,35 +162,90 @@ Chromium on this commit — it fails identically on unmodified `develop` — so
 every scene through the canvas renderer using two different builds and requires
 the results to be identical, pixel for pixel.
 
+## Geometry caching
+
+Tessellation is cached per item and reused while the item's geometry is
+unchanged, with the transform applied by the vertex shader (`u_matrix`) instead
+of being baked into the coordinates on the CPU. Paths are therefore recorded in
+their own space, and `Path#_version` — which Paper.js bumps only on real
+segment edits — is the invalidation signal.
+
+This needs one addition in core, in `Item#draw`:
+
+```js
+var prevItem = ctx._currentItem;
+ctx._currentItem = this;
+this._draw(ctx, param, viewMatrix, strokeMatrix);
+ctx._currentItem = prevItem;
+```
+
+A Canvas2D context accepts and ignores the property, so the default renderer is
+byte-for-byte unaffected (`test/gl/regression.js` checks exactly that). Only
+`Path` carries `_version`; every other item type tessellates each frame as
+before.
+
+**It only pays off with `applyMatrix: false`.** Paper.js's default is `true`,
+which means a transform *rewrites every segment coordinate in place* — the
+geometry genuinely changed, there is nothing to reuse, and the measured hit rate
+is 0%. Turning it off keeps the transform on the item as a matrix and the hit
+rate goes to 95%:
+
+```js
+item.applyMatrix = false;   // or paper.settings.applyMatrix = false
+```
+
+### A latent bug this surfaced
+
+`Segment#_transformCoordinates` writes new coordinates directly into the point
+objects, bypassing the setters that call `_changed()`, and `Item#transform()`
+then reports only `Change.MATRIX`. So with `applyMatrix: true` every segment
+changed while `Path#_version` stood still. `Path#_transformContent` now bumps
+it. Without that fix a cache keyed on `_version` renders visibly stale geometry
+— 14% of pixels wrong in `test/gl/animated.js`, which exists to catch exactly
+this. The same staleness applies to any other `_version` consumer, which
+upstream is `CurveLocation`.
+
 ## Performance: read this before building on it
 
-Measured in headless Chromium (SwiftShader, i.e. **software** WebGL — a floor,
-not representative of real hardware), 30 full redraws with the scene rotating
-each frame:
+All numbers below come from headless Chromium on SwiftShader — **software**
+WebGL, a floor rather than a prediction for real hardware. Software
+rasterization also inflates per-fragment cost, which shifts the balance away
+from the CPU-side work the cache targets.
+
+### What the geometry cache is worth
+
+Minimum of 5 runs, 20 frames each, same build with the cache toggled:
+
+| scene | cache off | cache on | speedup | hit rate |
+| --- | --- | --- | --- | --- |
+| 100 circles, applyMatrix off | 2.33 ms | 2.30 ms | 1.02× | 95% |
+| 500 circles, applyMatrix off | 24.56 ms | 23.52 ms | 1.04× | 95% |
+| 100 stroked, applyMatrix off | 18.12 ms | 19.56 ms | 0.93× | 95% |
+| 500 stroked, applyMatrix off | 35.72 ms | 24.13 ms | 1.48× | 95% |
+| any scene, applyMatrix on (default) | — | — | ~1× (noise) | 0% |
+
+Strokes gain most, because expanding a polyline into join and cap geometry is
+the most expensive CPU step. Fills gain little.
+
+### Where the time actually goes
+
+**Caching geometry does not close the gap with Canvas2D**, and that is the
+useful result. Draw-call overhead dominates: the backend still issues four to
+six calls per item — a stencil pass, a cover pass, a program switch and a
+buffer upload each — so at 2000 items it is making roughly 10,000 draw calls a
+frame. Removing CPU tessellation from that picture changes a small share of the
+total.
 
 | items | canvas | webgl | ratio |
 | --- | --- | --- | --- |
-| 100 circles | 1.06 ms | 8.16 ms | 0.13× |
-| 500 circles | 2.94 ms | 30.42 ms | 0.10× |
-| 2000 circles | 11.63 ms | 279.94 ms | 0.04× |
-| 8000 circles | 38.56 ms | 459.56 ms | 0.08× |
-| 500 stroked | 3.70 ms | 261.34 ms | 0.01× |
+| 100 circles | 0.57 ms | 5.38 ms | 0.11× |
+| 500 circles | 1.84 ms | 20.78 ms | 0.09× |
+| 2000 circles | 6.44 ms | 160.77 ms | 0.04× |
+| 8000 circles | 23.05 ms | 459.44 ms | 0.05× |
 
-**The GPU backend is currently much slower than Canvas2D.** Two reasons, and
-only one of them is the software rasterizer:
-
-1. SwiftShader has no GPU behind it, so every fragment is CPU work anyway.
-2. More importantly, this implementation issues **four to six draw calls per
-   item** — a stencil pass, a cover pass, a program switch and a full vertex
-   buffer re-upload each time — with no batching whatsoever. At 8000 items that
-   is roughly 40,000 draw calls per frame, which would be slow on real hardware
-   too.
-
-This is the outcome the plan predicted: correctness first, and the speed comes
-only from the batching phase. Before investing further, run `test/gl/bench.js`
-on real hardware, then implement batching (group consecutive items sharing a
-pipeline and paint into one draw call, and cache flattened and stencil geometry
-per `Path` keyed by `_version`, which Paper already bumps in `_changed`). If the
-numbers do not move decisively after that, the honest conclusion is that
-Canvas2D is the right renderer for most Paper.js scenes and this backend should
-stay a niche option.
+**Batching is the next thing to build, and the evidence now says so rather than
+just predicting it**: group items that share a program and paint into one
+vertex buffer and one `drawArrays`, instead of a stencil/cover pair per item.
+After that, skipping the stencil pass entirely for convex shapes, and instanced
+signed-distance rendering for large numbers of small marks, are the follow-ups.
+Until batching lands, Canvas2D remains the right default for Paper.js scenes.

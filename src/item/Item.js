@@ -4512,7 +4512,19 @@ new function() { // Injection scope for hit-test functions shared with project
             if (offset)
                 ctx.translate(-offset.x, -offset.y);
         }
+        // Tell the renderer which item is about to draw, so that a backend
+        // able to cache tessellated geometry can key that cache on the item's
+        // identity and version. Canvas2D contexts accept and ignore the
+        // property, so this is inert for the default renderer. It is cleared
+        // again below, so that drawing which does not belong to an item (such
+        // as Item#_drawSelected) is never mistaken for this item's geometry.
+        var prevItem = ctx._currentItem;
+        ctx._currentItem = this;
         this._draw(ctx, param, viewMatrix, strokeMatrix);
+        // Restored rather than cleared: a CompoundPath draws its children
+        // through this same method and then fills itself, and must still be
+        // the current item when it does.
+        ctx._currentItem = prevItem;
         ctx.restore();
         matrices.pop();
         if (param.clip && !param.dontFinish) {
