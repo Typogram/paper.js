@@ -1355,9 +1355,10 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
             hitTolerance: 0,
             // The rasterizer that new views use, unless the element opts into
             // a different one through a `data-paper-renderer` attribute:
-            // 'canvas' (the default), 'webgl', or 'auto' to prefer the GPU
-            // renderer wherever it is available. See View.create().
-            renderer: 'canvas'
+            // 'canvas', 'webgl', or 'auto' (the default) to prefer the GPU
+            // renderer wherever it is available, falling back to 'canvas'
+            // otherwise. See View.create().
+            renderer: 'auto'
         });
         this.project = null;
         this.projects = [];
@@ -30868,9 +30869,9 @@ var GLContext = Base.extend(new function() {
         },
 
         // -------------------------------------------------------------------
-        // Path construction. Canvas2D transforms path points by the CTM in
-        // effect when each command is issued, so coordinates are converted to
-        // device space here and GLPath stores flattened polylines only.
+        // Path construction. Points are kept in local (pre-CTM) space so the
+        // tessellation cache can be reused while only an item's matrix
+        // changes; the CTM is applied later, when the path is consumed.
         // -------------------------------------------------------------------
 
         beginPath: function() {
@@ -30880,6 +30881,17 @@ var GLContext = Base.extend(new function() {
             this._path._tolerance = BASE_TOLERANCE
                     / Math.max(matrixScale(this._state.matrix), 1e-6);
             this._cacheable = true;
+            // fill() and stroke() are always called before the CTM changes
+            // again, so reading state.matrix at that point is fine. clip()
+            // is different: Item#draw() calls ctx.clip() only after
+            // restoring the context, once the item's own matrix is no
+            // longer on the stack (this mirrors Canvas2D, where clip() just
+            // reuses the already-recorded, already-transformed path). Since
+            // paths here stay in local space until consumed, clip() needs
+            // the matrix that was active while this path was being built,
+            // not whatever is active when it is called - so it is captured
+            // here, at the one point both are guaranteed to be the same.
+            this._pathMatrix = this._state.matrix;
         },
 
         closePath: function() {
@@ -31135,7 +31147,10 @@ var GLContext = Base.extend(new function() {
 
         clip: function(fillRule) {
             var state = this._state,
-                m = state.matrix,
+                // Not state.matrix: Item#draw() calls ctx.clip() after
+                // ctx.restore(), once the item's own matrix is off the
+                // stack. See the note in #beginPath().
+                m = this._pathMatrix || state.matrix,
                 local = this._getFillTriangles(this._path),
                 triangles = new Array(local.length);
             // A clip outlives the transform that defined it and is rebuilt
@@ -32124,9 +32139,11 @@ GLGradient._parse = function(value) {
  * scene traversal, style application and compositing — is shared with the
  * canvas renderer.
  *
- * This view is never created implicitly. It is opt-in, either per element
- * through a `data-paper-renderer="webgl"` attribute or globally through
- * `paper.settings.renderer`. See {@link View.create}.
+ * `PaperScope#settings.renderer` defaults to `'auto'`, so this is the view
+ * every new scope creates wherever WebGL2 is available, falling back to
+ * {@link CanvasView} otherwise. A single element can still be pinned to a
+ * specific renderer through a `data-paper-renderer` attribute, or a scope
+ * through `paper.settings.renderer`. See {@link View.create}.
  *
  * @private
  */

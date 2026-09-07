@@ -1355,9 +1355,10 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
             hitTolerance: 0,
             // The rasterizer that new views use, unless the element opts into
             // a different one through a `data-paper-renderer` attribute:
-            // 'canvas' (the default), 'webgl', or 'auto' to prefer the GPU
-            // renderer wherever it is available. See View.create().
-            renderer: 'canvas'
+            // 'canvas', 'webgl', or 'auto' (the default) to prefer the GPU
+            // renderer wherever it is available, falling back to 'canvas'
+            // otherwise. See View.create().
+            renderer: 'auto'
         });
         this.project = null;
         this.projects = [];
@@ -32141,9 +32142,11 @@ GLGradient._parse = function(value) {
  * scene traversal, style application and compositing — is shared with the
  * canvas renderer.
  *
- * This view is never created implicitly. It is opt-in, either per element
- * through a `data-paper-renderer="webgl"` attribute or globally through
- * `paper.settings.renderer`. See {@link View.create}.
+ * `PaperScope#settings.renderer` defaults to `'auto'`, so this is the view
+ * every new scope creates wherever WebGL2 is available, falling back to
+ * {@link CanvasView} otherwise. A single element can still be pinned to a
+ * specific renderer through a `data-paper-renderer` attribute, or a scope
+ * through `paper.settings.renderer`. See {@link View.create}.
  *
  * @private
  */
