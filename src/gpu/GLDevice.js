@@ -152,6 +152,26 @@ var GLDevice = Base.extend(/** @lends GLDevice# */{
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, count * 2);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        // The VAO is shared, so a colour attribute left enabled by
+        // #uploadColored() would be read as garbage by the plain programs.
+        gl.disableVertexAttribArray(1);
+    },
+
+    /**
+     * Uploads interleaved [x, y, r, g, b, a] vertices for the batched draws,
+     * binding position to location 0 and colour to location 1.
+     */
+    uploadColored: function(data, count) {
+        var gl = this.gl,
+            stride = 6 * 4;
+        gl.bindVertexArray(this._vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, count * stride, gl.STREAM_DRAW);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, count * 6);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 2 * 4);
     },
 
     setSize: function(width, height) {

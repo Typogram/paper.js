@@ -42,6 +42,34 @@ var GLShaders = /** @lends GLShaders */{
         '}'
     ].join('\n'),
 
+    // Batched geometry arrives already in device space, with one colour per
+    // vertex so that many shapes with different paints can share a single
+    // draw call. The identity transform of the shader above would do, but
+    // carrying the colour needs its own attribute layout either way.
+    batchVertex: [
+        '#version 300 es',
+        'layout(location = 0) in vec2 a_position;',
+        'layout(location = 1) in vec4 a_color;',
+        'uniform vec2 u_resolution;',
+        'out vec4 v_color;',
+        'void main() {',
+        '    v_color = a_color;',
+        '    vec2 clip = a_position / u_resolution * 2.0 - 1.0;',
+        '    gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);',
+        '}'
+    ].join('\n'),
+
+    batchSolid: [
+        '#version 300 es',
+        'precision highp float;',
+        // Already premultiplied on the CPU, alongside globalAlpha.
+        'in vec4 v_color;',
+        'out vec4 fragColor;',
+        'void main() {',
+        '    fragColor = v_color;',
+        '}'
+    ].join('\n'),
+
     // Used by the stencil passes, which have colour writes masked off.
     none: [
         '#version 300 es',

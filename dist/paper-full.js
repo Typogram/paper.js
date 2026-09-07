@@ -29770,6 +29770,26 @@ var GLDevice = Base.extend(/** @lends GLDevice# */{
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, count * 2);
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        // The VAO is shared, so a colour attribute left enabled by
+        // #uploadColored() would be read as garbage by the plain programs.
+        gl.disableVertexAttribArray(1);
+    },
+
+    /**
+     * Uploads interleaved [x, y, r, g, b, a] vertices for the batched draws,
+     * binding position to location 0 and colour to location 1.
+     */
+    uploadColored: function(data, count) {
+        var gl = this.gl,
+            stride = 6 * 4;
+        gl.bindVertexArray(this._vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this._buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, count * stride, gl.STREAM_DRAW);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, count * 6);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 2 * 4);
     },
 
     setSize: function(width, height) {
@@ -29867,6 +29887,34 @@ var GLShaders = /** @lends GLShaders */{
         '    v_position = pos;',
         '    vec2 clip = pos / u_resolution * 2.0 - 1.0;',
         '    gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);',
+        '}'
+    ].join('\n'),
+
+    // Batched geometry arrives already in device space, with one colour per
+    // vertex so that many shapes with different paints can share a single
+    // draw call. The identity transform of the shader above would do, but
+    // carrying the colour needs its own attribute layout either way.
+    batchVertex: [
+        '#version 300 es',
+        'layout(location = 0) in vec2 a_position;',
+        'layout(location = 1) in vec4 a_color;',
+        'uniform vec2 u_resolution;',
+        'out vec4 v_color;',
+        'void main() {',
+        '    v_color = a_color;',
+        '    vec2 clip = a_position / u_resolution * 2.0 - 1.0;',
+        '    gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);',
+        '}'
+    ].join('\n'),
+
+    batchSolid: [
+        '#version 300 es',
+        'precision highp float;',
+        // Already premultiplied on the CPU, alongside globalAlpha.
+        'in vec4 v_color;',
+        'out vec4 fragColor;',
+        'void main() {',
+        '    fragColor = v_color;',
         '}'
     ].join('\n'),
 
@@ -30511,6 +30559,14 @@ var GLContext = Base.extend(new function() {
     // counter of the shape currently being rasterized.
     var CLIP_BIT = 0x80,
         SCRATCH_MASK = 0x7f,
+        // Batched rules get disjoint stencil bits, so a fill and a stroke can
+        // be accumulated in the *same* pass without contaminating each other's
+        // coverage. That is what lets a filled-and-stroked item batch at all:
+        // Path#_draw emits fill() then stroke(), and the two always overlap.
+        // NONZERO_MASK is a wrapping winding counter, so a path nesting more
+        // than 64 contours the same way would alias - far beyond real content.
+        NONZERO_MASK = 0x3f,
+        UNION_BIT = 0x40,
         // Passed to the vertex shader for draws whose coordinates are already
         // in device space (cover quads, clips, images, text).
         IDENTITY_MAT3 = [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -30518,6 +30574,14 @@ var GLContext = Base.extend(new function() {
         // own space now, so the tolerance is divided by the transform's scale
         // to keep the on-screen result identical.
         BASE_TOLERANCE = 0.2,
+        // Side of one occupancy cell, in device pixels. Batching needs to know
+        // whether an incoming shape's bounds touch anything already queued;
+        // a coarse grid answers that in a handful of lookups instead of
+        // testing against every shape in the batch.
+        BATCH_CELL = 32,
+        // Vertex ceiling for one batch, so a pathological scene cannot grow
+        // the staging arrays without bound.
+        BATCH_MAX_VERTICES = 120000,
         colorCache = {};
 
     // The average scale a matrix applies, used both to pick a flattening
@@ -30574,6 +30638,36 @@ var GLContext = Base.extend(new function() {
         return components;
     }
 
+    /**
+     * A Float32Array that grows by doubling, written by index.
+     *
+     * The batch fills this once per shape per frame, so it is the hottest code
+     * in the renderer. Accumulating into a plain Array and converting later
+     * costs far more than the draw calls batching saves: Float32Array#set() on
+     * a boxed number array is a per-element conversion, and it lands right in
+     * the middle of the frame.
+     */
+    function VertexBuffer() {
+        this.data = new Float32Array(4096);
+        this.length = 0;
+    }
+
+    VertexBuffer.prototype.reserve = function(count) {
+        var required = this.length + count,
+            size = this.data.length;
+        if (required > size) {
+            while (size < required)
+                size *= 2;
+            var grown = new Float32Array(size);
+            grown.set(this.data.subarray(0, this.length));
+            this.data = grown;
+        }
+    };
+
+    VertexBuffer.prototype.reset = function() {
+        this.length = 0;
+    };
+
     // Builds the column-major mat3 GLSL expects from a Paper.js Matrix.
     function toMat3(m) {
         return [m._a, m._b, 0, m._c, m._d, 0, m._tx, m._ty, 1];
@@ -30626,6 +30720,24 @@ var GLContext = Base.extend(new function() {
             this._cacheHits = 0;
             this._cacheMisses = 0;
             this._currentItem = null;
+            // Pending batch of solid-paint shapes, flushed as two draw calls
+            // rather than two per shape. See #_appendToBatch().
+            this._batch = null;
+            // Reused across flushes so the staging buffers keep their capacity.
+            this._batchPool = null;
+            this._batchGrid = null;
+            this._batchOwner = null;
+            // Distinguishes shapes that belong to no item, so they never
+            // appear to share an owner with one another.
+            this._batchAnonymous = 0;
+            this._batchCols = 0;
+            this._batchRows = 0;
+            // Generation stamp, so starting a batch costs an increment rather
+            // than clearing the whole grid.
+            this._batchGeneration = 0;
+            // Diagnostics, reset each frame by GLView#update().
+            this._drawCalls = 0;
+            this._batchedShapes = 0;
             this._textures = {};
             this._textCache = {};
             this._textCacheSize = 0;
@@ -30927,6 +31039,7 @@ var GLContext = Base.extend(new function() {
         },
 
         clearRect: function(x, y, width, height) {
+            this._flushBatch();
             var device = this._device,
                 gl = device.gl,
                 size = device.getSize(),
@@ -31028,6 +31141,7 @@ var GLContext = Base.extend(new function() {
             data.set(triangles);
             device.upload(data, count);
             device.gl.drawArrays(device.gl.TRIANGLES, 0, count);
+            this._drawCalls++;
         },
 
         _drawQuad: function(bounds) {
@@ -31043,6 +31157,7 @@ var GLContext = Base.extend(new function() {
             data[10] = x0; data[11] = y1;
             device.upload(data, 6);
             device.gl.drawArrays(device.gl.TRIANGLES, 0, 6);
+            this._drawCalls++;
         },
 
         _useProgram: function(name, fragmentSource, matrix) {
@@ -31102,6 +31217,264 @@ var GLContext = Base.extend(new function() {
         },
 
         /**
+         * Starts a fresh occupancy grid for a new batch, reallocating it only
+         * when the viewport changed. Cells are stamped with a generation
+         * counter, so starting a batch is an increment rather than a clear.
+         */
+        _resetBatchGrid: function() {
+            var size = this._device.getSize(),
+                cols = Math.max(1, Math.ceil(size.width / BATCH_CELL)),
+                rows = Math.max(1, Math.ceil(size.height / BATCH_CELL));
+            if (!this._batchGrid || this._batchCols !== cols
+                    || this._batchRows !== rows) {
+                this._batchGrid = new Uint32Array(cols * rows);
+                this._batchOwner = new Float64Array(cols * rows);
+                this._batchCols = cols;
+                this._batchRows = rows;
+                this._batchGeneration = 0;
+            }
+            if (++this._batchGeneration === 0xffffffff) {
+                this._batchGrid.fill(0);
+                this._batchGeneration = 1;
+            }
+        },
+
+        /**
+         * Claims the cells a device-space quad covers for `owner`, returning
+         * false if any of them already belongs to a *different* shape in this
+         * batch.
+         *
+         * Two shapes may share a stencil pass only when they cannot corrupt
+         * each other's coverage. Different items must therefore not overlap:
+         * the stencil holds one set of counters per pixel. The same item is
+         * the exception - its fill and its stroke use disjoint bits, and the
+         * cover passes run fill-before-stroke, which is the order Paper.js
+         * asked for anyway.
+         */
+        _claimCells: function(quad, owner) {
+            var grid = this._batchGrid,
+                owners = this._batchOwner,
+                cols = this._batchCols,
+                gen = this._batchGeneration,
+                c0 = Math.max(0, Math.floor(quad[0] / BATCH_CELL)),
+                r0 = Math.max(0, Math.floor(quad[1] / BATCH_CELL)),
+                c1 = Math.min(cols - 1, Math.floor((quad[2] - 1) / BATCH_CELL)),
+                r1 = Math.min(this._batchRows - 1,
+                        Math.floor((quad[3] - 1) / BATCH_CELL)),
+                r, c, i;
+            for (r = r0; r <= r1; r++) {
+                for (c = c0; c <= c1; c++) {
+                    i = r * cols + c;
+                    if (grid[i] === gen && owners[i] !== owner)
+                        return false;
+                }
+            }
+            for (r = r0; r <= r1; r++) {
+                for (c = c0; c <= c1; c++) {
+                    i = r * cols + c;
+                    grid[i] = gen;
+                    owners[i] = owner;
+                }
+            }
+            return true;
+        },
+
+        /**
+         * Queues one solid-painted shape instead of drawing it immediately.
+         *
+         * The whole batch is rasterized by #_flushBatch() in a handful of draw
+         * calls rather than two per shape, which is the point: at a few hundred
+         * small items the per-item driver overhead, not the fragment work, is
+         * what costs the frame.
+         *
+         * Geometry is transformed to device space here rather than by a
+         * per-shape uniform, since a batch has one buffer and many transforms.
+         * The tessellation cache still holds, so what is paid per frame is a
+         * matrix multiply per vertex, not a re-flattening of the curves.
+         */
+        _appendToBatch: function(triangles, quad, matrix, rule, color) {
+            var batch = this._batch,
+                item = this._currentItem,
+                // Shapes with no item of their own (selection handles, scratch
+                // paths) must never be treated as sharing an owner, so give
+                // each a distinct negative id.
+                owner = item ? item._id : -(++this._batchAnonymous);
+            if (batch && batch.vertices > BATCH_MAX_VERTICES) {
+                this._flushBatch();
+                batch = null;
+            }
+            if (!batch) {
+                this._resetBatchGrid();
+                batch = this._batch = this._newBatch();
+            }
+            if (!this._claimCells(quad, owner)) {
+                // Overlaps a different shape already queued. Flushing keeps
+                // painter order intact: everything queued before this shape
+                // reaches the framebuffer before it does.
+                this._flushBatch();
+                this._resetBatchGrid();
+                batch = this._batch = this._newBatch();
+                this._claimCells(quad, owner);
+            }
+            var target = batch[rule],
+                stencil = target.stencil,
+                count = triangles.length,
+                out, n, i;
+            stencil.reserve(count);
+            out = stencil.data;
+            n = stencil.length;
+            if (matrix) {
+                var a = matrix._a, b = matrix._b, c = matrix._c, d = matrix._d,
+                    tx = matrix._tx, ty = matrix._ty;
+                for (i = 0; i < count; i += 2) {
+                    var x = triangles[i],
+                        y = triangles[i + 1];
+                    out[n++] = a * x + c * y + tx;
+                    out[n++] = b * x + d * y + ty;
+                }
+            } else {
+                for (i = 0; i < count; i++)
+                    out[n++] = triangles[i];
+            }
+            stencil.length = n;
+            batch.vertices += count / 2;
+
+            var cover = target.cover,
+                x0 = quad[0], y0 = quad[1], x1 = quad[2], y1 = quad[3],
+                cr = color[0], cg = color[1], cb = color[2], ca = color[3];
+            // Two triangles, carrying this shape's colour per vertex so one
+            // draw can shade many differently painted shapes.
+            cover.reserve(36);
+            out = cover.data;
+            n = cover.length;
+            var corners = [x0, y0, x1, y0, x1, y1, x0, y0, x1, y1, x0, y1];
+            for (i = 0; i < 12; i += 2) {
+                out[n++] = corners[i];
+                out[n++] = corners[i + 1];
+                out[n++] = cr;
+                out[n++] = cg;
+                out[n++] = cb;
+                out[n++] = ca;
+            }
+            cover.length = n;
+            this._batchedShapes++;
+        },
+
+        /**
+         * Batches are reused across frames so their buffers keep the capacity
+         * they grew to, instead of reallocating every flush.
+         */
+        _newBatch: function() {
+            var batch = this._batchPool;
+            if (!batch) {
+                batch = this._batchPool = {
+                    nonzero: {
+                        stencil: new VertexBuffer(),
+                        cover: new VertexBuffer()
+                    },
+                    union: {
+                        stencil: new VertexBuffer(),
+                        cover: new VertexBuffer()
+                    },
+                    vertices: 0
+                };
+            }
+            batch.nonzero.stencil.reset();
+            batch.nonzero.cover.reset();
+            batch.union.stencil.reset();
+            batch.union.cover.reset();
+            batch.vertices = 0;
+            return batch;
+        },
+
+        /**
+         * Draws a VertexBuffer of device-space positions, straight from its
+         * typed array with no intermediate copy.
+         */
+        _drawBuffer: function(buffer) {
+            var device = this._device,
+                gl = device.gl,
+                count = buffer.length / 2;
+            device.upload(buffer.data, count);
+            gl.drawArrays(gl.TRIANGLES, 0, count);
+            this._drawCalls++;
+        },
+
+        _drawBatchCover: function(cover) {
+            var device = this._device,
+                gl = device.gl,
+                count = cover.length / 6,
+                entry = device.getProgram('batchSolid', GLShaders.batchVertex,
+                        GLShaders.batchSolid),
+                size = device.getSize();
+            device.useProgram(entry);
+            gl.uniform2f(device.getUniform(entry, 'u_resolution'),
+                    size.width, size.height);
+            device.uploadColored(cover.data, count);
+            gl.drawArrays(gl.TRIANGLES, 0, count);
+            this._drawCalls++;
+        },
+
+        /**
+         * Rasterizes the pending batch. Both rules are stencilled first, into
+         * their own bits, then covered fill-before-stroke.
+         */
+        _flushBatch: function() {
+            var batch = this._batch;
+            // Cleared first: the draws below must not see a pending batch, and
+            // the next shape starts a fresh one from the pool.
+            this._batch = null;
+            if (!batch || !batch.vertices)
+                return;
+            var gl = this._device.gl,
+                rules = ['nonzero', 'union'],
+                i, rule, target;
+
+            gl.enable(gl.STENCIL_TEST);
+            gl.colorMask(false, false, false, false);
+            // Batched geometry is already in device space, so the identity.
+            this._useProgram('none', GLShaders.none);
+            for (i = 0; i < 2; i++) {
+                target = batch[rules[i]];
+                if (target.stencil.length) {
+                    this._setStencilRule(rules[i]);
+                    this._drawBuffer(target.stencil);
+                }
+            }
+
+            gl.colorMask(true, true, true, true);
+            for (i = 0; i < 2; i++) {
+                rule = rules[i];
+                target = batch[rule];
+                if (!target.cover.length)
+                    continue;
+                var mask = rule === 'union' ? UNION_BIT : NONZERO_MASK;
+                gl.stencilMask(mask);
+                if (this._clipping) {
+                    // Passes where the clip bit is set *and* some rule bit is:
+                    // CLIP_BIT < (clip | rule bits) holds only in that case,
+                    // since every rule mask is below CLIP_BIT.
+                    gl.stencilFunc(gl.LESS, CLIP_BIT, CLIP_BIT | mask);
+                } else {
+                    gl.stencilFunc(gl.NOTEQUAL, 0, mask);
+                }
+                gl.stencilOp(gl.KEEP, gl.KEEP, gl.ZERO);
+                this._drawBatchCover(target.cover);
+                if (this._clipping) {
+                    // Covered pixels outside the clip kept their bits, so
+                    // clear them. The same buffer serves; colours are masked.
+                    gl.colorMask(false, false, false, false);
+                    gl.stencilFunc(gl.ALWAYS, 0, 0xff);
+                    gl.stencilOp(gl.KEEP, gl.KEEP, gl.ZERO);
+                    this._drawBatchCover(target.cover);
+                    gl.colorMask(true, true, true, true);
+                }
+            }
+            gl.disable(gl.STENCIL_TEST);
+            gl.stencilMask(0xff);
+        },
+
+        /**
          * @param {Number[]} triangles coverage geometry, in the space `matrix`
          *     maps to device space (identity when already in device space)
          * @param {Number[]} bounds the geometry's bounds, in that same space
@@ -31137,6 +31510,25 @@ var GLContext = Base.extend(new function() {
             if (x1 <= x0 || y1 <= y0)
                 return;
             var quad = [x0, y0, x1, y1];
+
+            // A solid paint is expressible as a per-vertex colour, so the
+            // shape can join the pending batch and be drawn alongside its
+            // neighbours. Gradients, images and text need their own uniforms
+            // or textures and fall through to the direct path below.
+            // Even-odd is left on the direct path: it is rare, and it would
+            // need a third disjoint stencil bit to coexist with the others.
+            if (paint.type === 'solid' && rule !== 'evenodd'
+                    && this._batchEnabled !== false) {
+                var c = paint.color,
+                    a = c[3] * this._state.globalAlpha;
+                this._appendToBatch(triangles, quad, matrix, rule,
+                        // Premultiplied, matching the blend function.
+                        [c[0] * a, c[1] * a, c[2] * a, a]);
+                return;
+            }
+            // Anything drawn directly must not jump ahead of shapes already
+            // queued behind it.
+            this._flushBatch();
 
             // Pass 1: accumulate coverage in the scratch stencil bits. The
             // coverage geometry is transformed on the GPU; the cover pass
@@ -31178,18 +31570,21 @@ var GLContext = Base.extend(new function() {
 
         _setStencilRule: function(rule) {
             var gl = this._device.gl;
-            gl.stencilFunc(gl.ALWAYS, 1, 0xff);
             if (rule === 'evenodd') {
                 // A single toggling bit is all the even-odd rule needs.
+                gl.stencilFunc(gl.ALWAYS, 1, 0xff);
                 gl.stencilMask(0x01);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
             } else if (rule === 'union') {
                 // Coverage without counting, so overlapping stroke geometry is
-                // not blended twice.
-                gl.stencilMask(SCRATCH_MASK);
+                // not blended twice. REPLACE writes ref masked by the stencil
+                // mask, so ref must carry the union bit itself.
+                gl.stencilFunc(gl.ALWAYS, UNION_BIT, 0xff);
+                gl.stencilMask(UNION_BIT);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
             } else {
-                gl.stencilMask(SCRATCH_MASK);
+                gl.stencilFunc(gl.ALWAYS, 0, 0xff);
+                gl.stencilMask(NONZERO_MASK);
                 gl.stencilOpSeparate(gl.FRONT, gl.KEEP, gl.KEEP, gl.INCR_WRAP);
                 gl.stencilOpSeparate(gl.BACK, gl.KEEP, gl.KEEP, gl.DECR_WRAP);
             }
@@ -31205,6 +31600,9 @@ var GLContext = Base.extend(new function() {
             var state = this._state;
             if (state.clip === this._activeClip)
                 return;
+            // Queued shapes were recorded under the outgoing clip and have to
+            // reach the framebuffer before it changes.
+            this._flushBatch();
             var device = this._device,
                 gl = device.gl,
                 size = device.getSize(),
@@ -31308,6 +31706,7 @@ var GLContext = Base.extend(new function() {
             var inverse = matrix.inverted();
             if (!inverse)
                 return;
+            this._flushBatch();
             this._checkComposite();
             this._syncClip();
             var device = this._device,
@@ -31507,6 +31906,8 @@ var GLContext = Base.extend(new function() {
         },
 
         getImageData: function(x, y, width, height) {
+            // The batch has to have reached the framebuffer before it is read.
+            this._flushBatch();
             var device = this._device,
                 gl = device.gl,
                 size = device.getSize(),
@@ -31536,6 +31937,7 @@ var GLContext = Base.extend(new function() {
         },
 
         putImageData: function(data, x, y) {
+            this._flushBatch();
             var canvas = CanvasProvider.getCanvas(data.width, data.height),
                 state = this._state,
                 matrix = state.matrix,
@@ -31759,6 +32161,9 @@ var GLView = View.extend(/** @lends GLView# */{
             element = this._element;
         this._device.setSize(element.width, element.height);
         this._device.clear();
+        // Per-frame diagnostics, read by the comparison demo.
+        ctx._drawCalls = 0;
+        ctx._batchedShapes = 0;
         if (project) {
             ctx.save();
             // Match the HiDPI upscaling CanvasView applies to its context.
@@ -31767,6 +32172,8 @@ var GLView = View.extend(/** @lends GLView# */{
             project.draw(ctx, this._matrix, this._pixelRatio);
             ctx.restore();
         }
+        // Nothing may stay queued past the end of a frame.
+        ctx._flushBatch();
         this._needsUpdate = false;
         return true;
     }

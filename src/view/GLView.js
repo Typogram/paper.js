@@ -122,6 +122,9 @@ var GLView = View.extend(/** @lends GLView# */{
             element = this._element;
         this._device.setSize(element.width, element.height);
         this._device.clear();
+        // Per-frame diagnostics, read by the comparison demo.
+        ctx._drawCalls = 0;
+        ctx._batchedShapes = 0;
         if (project) {
             ctx.save();
             // Match the HiDPI upscaling CanvasView applies to its context.
@@ -130,6 +133,8 @@ var GLView = View.extend(/** @lends GLView# */{
             project.draw(ctx, this._matrix, this._pixelRatio);
             ctx.restore();
         }
+        // Nothing may stay queued past the end of a frame.
+        ctx._flushBatch();
         this._needsUpdate = false;
         return true;
     }

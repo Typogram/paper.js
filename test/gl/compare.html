@@ -135,6 +135,35 @@ var scenes = {
         }
     },
 
+    // Batching reorders rasterization: every shape in a batch is stencilled
+    // before any is covered. These two scenes are the guard on that being
+    // invisible - heavy overlap with transparency would expose any shape
+    // drawn out of painter order.
+    denseOverlap: function(paper) {
+        for (var i = 0; i < 120; i++) {
+            var angle = i * 0.61,
+                radius = 20 + (i % 7) * 22,
+                circle = new paper.Path.Circle(
+                    [200 + Math.cos(angle) * (i % 11) * 14,
+                     200 + Math.sin(angle) * (i % 13) * 12], radius);
+            circle.fillColor = new paper.Color((i % 16) / 16, 0.6, 0.9, 0.45);
+        }
+    },
+
+    strokedGrid: function(paper) {
+        // A filled and stroked item overlaps itself, so this exercises the
+        // disjoint-stencil-bit path for every single item.
+        for (var x = 0; x < 8; x++) {
+            for (var y = 0; y < 8; y++) {
+                var rect = new paper.Path.Rectangle(
+                        [18 + x * 47, 18 + y * 47], [36, 36]);
+                rect.fillColor = new paper.Color((x + y) / 14, 0.55, 0.85);
+                rect.strokeColor = '#1a1a1a';
+                rect.strokeWidth = 3;
+            }
+        }
+    },
+
     curves: function(paper) {
         var path = new paper.Path();
         path.fillColor = '#106080';

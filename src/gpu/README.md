@@ -205,6 +205,61 @@ it. Without that fix a cache keyed on `_version` renders visibly stale geometry
 this. The same staleness applies to any other `_version` consumer, which
 upstream is `CurveLocation`.
 
+## Batching
+
+Solid-painted shapes are queued instead of drawn, and the queue is rasterized
+in a handful of draw calls rather than two per shape:
+
+| scene | before | after |
+| --- | --- | --- |
+| 1000 filled circles | ~2000 draw calls | 48 |
+| 1000 filled + stroked circles | ~4000 draw calls | 100 |
+
+Three things make it work.
+
+**Disjoint stencil bits per rule.** `Path#_draw` emits `fill()` then `stroke()`,
+and the two always overlap, so a single shared winding counter would force a
+flush between them - which is exactly what happened in the first version, and
+why stroked scenes saw no benefit at all. The nonzero counter now lives in
+`0x3f` and the union bit in `0x40`, so a fill and a stroke accumulate in the
+same pass without touching each other. (Even-odd is left on the direct path;
+it is rare and would need a third allocation.)
+
+**An occupancy grid.** Two shapes may share a stencil pass only if they cannot
+corrupt each other's coverage, so bounds are tested against a coarse grid of
+32px cells. Cells record their owning item, which is what allows the one
+overlap that must be permitted - an item's own fill and stroke - while still
+rejecting overlap between different items. An overlapping shape flushes the
+batch, which keeps painter order exact.
+
+**Transform on the CPU, into the batch.** A batch has one buffer and many
+transforms, so the per-item `u_matrix` uniform cannot be used and coordinates
+are transformed as they are appended. The tessellation cache still holds: what
+is paid per frame is a matrix multiply per vertex, not a re-flattening. That
+accumulation is the hottest loop in the renderer and writes into a growable
+`Float32Array` by index - an earlier version used a plain Array and
+`Float32Array#set()`, whose per-element boxing conversion cost more than the
+draw calls the batching saved.
+
+Batching can be disabled at runtime for measurement:
+
+```js
+view.getContext()._batchEnabled = false;
+```
+
+### What is not yet measurable here
+
+The draw-call reduction is exact and reproducible. The wall-clock benefit is
+**not verified**: this environment only has SwiftShader, a software rasterizer,
+where draw calls are nearly free and fragment work dominates - the opposite of
+the cost model batching targets. Measurements there are also unstable, since
+without a per-frame `gl.finish()` the command queue back-pressures and the
+timing absorbs driver stalls. Filled scenes measured ~2.8x faster and
+filled-and-stroked ~3x *slower*, and I do not trust either number.
+
+Run `test/gl/bench.js` on real hardware, or flip the demo's batching toggle,
+before drawing any conclusion about speed.
+
 ## Performance: read this before building on it
 
 All numbers below come from headless Chromium on SwiftShader — **software**
