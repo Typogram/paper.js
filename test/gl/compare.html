@@ -135,6 +135,30 @@ var scenes = {
         }
     },
 
+    // Regression test for a bug where the GL context baked a clip mask's
+    // rasterized path against the CTM active when ctx.clip() was called
+    // rather than the one active while the mask's path was recorded -
+    // Item#draw() calls ctx.clip() only after ctx.restore(), by which point
+    // the clip item's own matrix is off the stack. A translated Shape (as
+    // SVG import auto-generates for a viewBox clip), as the first child of a
+    // group that is itself translated, is what exposed it: Path-based clips
+    // baked their matrix in early enough by coincidence to hide the bug, and
+    // Shape items rely entirely on the CTM at draw time since they never
+    // bake a transform into their own coordinates.
+    clipTranslatedShapeInGroup: function(paper) {
+        var mask = new paper.Shape.Rectangle([0, 0], [280, 280]);
+        mask.position = [140, 140];
+        var outer = new paper.Group({ children: [mask] });
+        outer.clipped = true;
+        outer.position = [200, 200];
+        for (var i = 0; i < 8; i++) {
+            var dot = new paper.Path.Circle(
+                    [40 + i * 45, 200 + (i % 2 ? 80 : -80)], 45);
+            dot.fillColor = new paper.Color(i / 8, 0.6, 0.7);
+            outer.addChild(dot);
+        }
+    },
+
     // Batching reorders rasterization: every shape in a batch is stencilled
     // before any is covered. These two scenes are the guard on that being
     // invisible - heavy overlap with transparency would expose any shape

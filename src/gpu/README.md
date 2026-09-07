@@ -205,6 +205,46 @@ it. Without that fix a cache keyed on `_version` renders visibly stale geometry
 this. The same staleness applies to any other `_version` consumer, which
 upstream is `CurveLocation`.
 
+### A second one: clip masks baked against the wrong matrix
+
+Recording paths in local space instead of transforming them immediately (the
+change above) has a second consequence: `clip()` has to bake the CTM into the
+clip geometry itself, since nothing downstream re-applies a per-shape matrix
+to clip triangles. Which CTM, though, matters. `Item#draw()` calls
+`ctx.clip()` only *after* `ctx.restore()` — this mirrors Canvas2D, where
+`clip()` just reuses the path that was already recorded, in device space, at
+`moveTo()`/`lineTo()` time, so it does not matter that the matrix has since
+been popped off the stack. Here it does: reading `state.matrix` at the point
+`clip()` runs reads the *parent's* matrix, not the clip item's own.
+
+`Path`-based clip masks mostly hid this by coincidence — the geometry a
+`Path` bakes at `applyMatrix: true` time already has the transform folded
+into its segment coordinates, so the CTM active when `clip()` ran didn't
+matter. `Shape` cannot do that (`applyMatrix` is always `false` for `Shape`;
+see above), so it depends entirely on the CTM at draw time — and SVG import
+auto-generates exactly this: a `Shape` clip mask, translated to the middle
+of the viewBox, as the first child of an imported group. Importing any SVG
+with a viewBox rendered only the fraction of content that happened to fall
+under the *parent's* untransformed clip rectangle.
+
+The fix captures the matrix once, in `beginPath()`, while the path is being
+built and the correct matrix is still guaranteed to be current, and has
+`clip()` read that instead of `state.matrix`:
+
+```js
+beginPath: function() {
+    ...
+    this._pathMatrix = this._state.matrix;
+},
+```
+
+`fill()` and `stroke()` are unaffected — both are always called from within
+the same item's `_draw()`, before its `ctx.restore()`, so `state.matrix` was
+already correct for them. `test/gl/compare.html`'s `clipTranslatedShapeInGroup`
+scene is the regression test: a translated `Shape` clip mask nested inside a
+translated `Group`, which fails at 24.7% pixel difference without the fix
+and passes at 0.75% with it.
+
 ## Batching
 
 Solid-painted shapes are queued instead of drawn, and the queue is rasterized
