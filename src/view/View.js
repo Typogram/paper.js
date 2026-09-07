@@ -1075,7 +1075,25 @@ var View = Base.extend(Emitter, /** @lends View# */{
                 name = 'canvas';
             }
             ctor = (renderers[name] || renderers.canvas).ctor;
-            return new ctor(project, element);
+            if (name === 'canvas')
+                return new ctor(project, element);
+            // isSupported() above only checks that the browser can create a
+            // WebGL2 context in general, e.g. on a throwaway canvas. It
+            // can't rule out a construction failure specific to this
+            // element or moment (already bound to a different context type,
+            // the browser's live-context limit, a lost/failing driver...),
+            // so 'auto' and an explicit 'webgl' both still need a fallback
+            // here to make good on "never fail if it is not [available]".
+            try {
+                return new ctor(project, element);
+            } catch (e) {
+                if (window.console && console.warn) {
+                    console.warn('paper.js: creating the "' + name
+                            + '" renderer failed (' + e.message
+                            + '), falling back to "canvas".');
+                }
+                return new renderers.canvas.ctor(project, element);
+            }
         },
 
         _isSupported: function(name) {
