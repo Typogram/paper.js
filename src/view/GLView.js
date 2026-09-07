@@ -131,7 +131,10 @@ var GLView = View.extend(/** @lends GLView# */{
             // Match the HiDPI upscaling CanvasView applies to its context.
             if (this._pixelRatio !== 1)
                 ctx.scale(this._pixelRatio, this._pixelRatio);
-            project.draw(ctx, this._matrix, this._pixelRatio, this._viewSize);
+            // Overridable per view, so the culling this enables can be
+            // measured against an otherwise identical run.
+            project.draw(ctx, this._matrix, this._pixelRatio,
+                    this._cullEnabled === false ? null : this._viewSize);
             ctx.restore();
         }
         // Nothing may stay queued past the end of a frame.

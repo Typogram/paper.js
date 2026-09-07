@@ -141,7 +141,10 @@ var CanvasView = View.extend(/** @lends CanvasView# */{
             size = this._viewSize;
         ctx.clearRect(0, 0, size.width + 1, size.height + 1);
         if (project)
-            project.draw(ctx, this._matrix, this._pixelRatio, this._viewSize);
+            // Overridable per view, so the culling this enables can be
+            // measured against an otherwise identical run.
+            project.draw(ctx, this._matrix, this._pixelRatio,
+                    this._cullEnabled === false ? null : this._viewSize);
         this._needsUpdate = false;
         return true;
     }
