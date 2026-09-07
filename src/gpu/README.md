@@ -247,6 +247,17 @@ Batching can be disabled at runtime for measurement:
 view.getContext()._batchEnabled = false;
 ```
 
+### Round joins emit a wedge, not a disc
+
+A round join used to emit a whole disc at every vertex. A flattened curve has
+a join per segment, each turning a few degrees, so that was by far the largest
+source of stroke geometry. Only the outer corner is ever missing between two
+segment quads, so only that wedge is emitted now: 500 round-joined stroked
+circles went from 1,318,263 vertices a frame to 478,263, and 140ms to 104ms.
+
+Note that Paper.js defaults `strokeJoin` to `'miter'`, so this only shows up on
+content that asks for round joins.
+
 ### What is not yet measurable here
 
 The draw-call reduction is exact and reproducible. The wall-clock benefit is
@@ -254,8 +265,15 @@ The draw-call reduction is exact and reproducible. The wall-clock benefit is
 where draw calls are nearly free and fragment work dominates - the opposite of
 the cost model batching targets. Measurements there are also unstable, since
 without a per-frame `gl.finish()` the command queue back-pressures and the
-timing absorbs driver stalls. Filled scenes measured ~2.8x faster and
-filled-and-stroked ~3x *slower*, and I do not trust either number.
+timing absorbs driver stalls. Toggling batching within one page - the lowest-variance
+comparison available - repeatedly showed filled scenes ~3x faster and
+filled-and-stroked ones 18-47% *slower*, with the magnitude drifting ~25%
+between runs of identical code. The direction is consistent; the size is not.
+
+The likely reason strokes regress *here*: batching transforms vertices on the
+CPU, which the per-item uniform avoided, and stroke geometry has many vertices.
+Where draw calls are nearly free, that trade loses. Where they are not - a real
+GPU - 1964 draw calls becoming 28 should dominate it.
 
 Run `test/gl/bench.js` on real hardware, or flip the demo's batching toggle,
 before drawing any conclusion about speed.

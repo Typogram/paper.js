@@ -219,6 +219,7 @@ var GLContext = Base.extend(new function() {
             this._batchGeneration = 0;
             // Diagnostics, reset each frame by GLView#update().
             this._drawCalls = 0;
+            this._vertices = 0;
             this._batchedShapes = 0;
             this._textures = {};
             this._textCache = {};
@@ -624,6 +625,7 @@ var GLContext = Base.extend(new function() {
             device.upload(data, count);
             device.gl.drawArrays(device.gl.TRIANGLES, 0, count);
             this._drawCalls++;
+            this._vertices += count;
         },
 
         _drawQuad: function(bounds) {
@@ -880,6 +882,7 @@ var GLContext = Base.extend(new function() {
             device.upload(buffer.data, count);
             gl.drawArrays(gl.TRIANGLES, 0, count);
             this._drawCalls++;
+            this._vertices += count;
         },
 
         _drawBatchCover: function(cover) {

@@ -124,6 +124,7 @@ var GLView = View.extend(/** @lends GLView# */{
         this._device.clear();
         // Per-frame diagnostics, read by the comparison demo.
         ctx._drawCalls = 0;
+        ctx._vertices = 0;
         ctx._batchedShapes = 0;
         if (project) {
             ctx.save();

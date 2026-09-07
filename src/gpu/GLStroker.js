@@ -51,15 +51,50 @@ var GLStroker = new function() {
         }
     }
 
-    function join(out, style, miterLimit, x, y, d0x, d0y, d1x, d1y, radius) {
-        if (style === 'round') {
-            disc(out, x, y, radius);
-            return;
+    // Angular step that keeps the sagitta of an arc approximation under
+    // ~0.2 units at the given radius.
+    function arcStep(radius) {
+        return 2 * Math.acos(Math.max(-1, 1 - 0.2 / Math.max(radius, 0.2)));
+    }
+
+    // Fills the outer corner of a round join with a fan spanning only the
+    // turn, rather than a whole disc. A flattened curve has a join at every
+    // segment, each turning a few degrees, so emitting a full disc at each one
+    // was by far the largest source of stroke geometry: a stroked circle came
+    // out at hundreds of vertices where tens will do.
+    function wedge(out, cx, cy, a0, a1, radius) {
+        var delta = a1 - a0;
+        // Take the short way round; the long way is the inner side, which the
+        // segment quads already cover.
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        var steps = Math.max(1, Math.min(64,
+                Math.ceil(Math.abs(delta) / arcStep(radius)))),
+            step = delta / steps,
+            px = cx + Math.cos(a0) * radius,
+            py = cy + Math.sin(a0) * radius;
+        for (var i = 1; i <= steps; i++) {
+            var angle = a0 + step * i,
+                x = cx + Math.cos(angle) * radius,
+                y = cy + Math.sin(angle) * radius;
+            out.push(cx, cy, px, py, x, y);
+            px = x;
+            py = y;
         }
+    }
+
+    function join(out, style, miterLimit, x, y, d0x, d0y, d1x, d1y, radius) {
         var cross = d0x * d1y - d0y * d1x;
         // Collinear: nothing to fill in.
         if (!cross)
             return;
+        if (style === 'round') {
+            var s = cross > 0 ? -1 : 1;
+            wedge(out, x, y,
+                    Math.atan2(d0x * s, d0y * -s),
+                    Math.atan2(d1x * s, d1y * -s), radius);
+            return;
+        }
         // Left normals of both segments, flipped to whichever side is on the
         // outside of the turn.
         var sign = cross > 0 ? -1 : 1,
