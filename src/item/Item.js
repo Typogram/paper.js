@@ -4427,9 +4427,22 @@ new function() { // Injection scope for hit-test functions shared with project
         // painting itself, so skipping it would corrupt that outline even
         // though the child alone looks safely offscreen.
         if (param.viewBounds && !param.clip && !param.dontStart
-                && !param.dontFinish
-                && !param.viewBounds.intersects(this.getStrokeBounds(viewMatrix)))
-            return;
+                && !param.dontFinish) {
+            // param.visibleSet, when present, is a spatial index's answer to
+            // "which leaf items overlap the viewport", precomputed once per
+            // frame instead of per item - see SpatialGrid and FastCanvasView.
+            // It only covers leaf items: a container's bounds are the union
+            // of its children's, which shift too often for the grid (built
+            // from a one-off scan) to track cheaply, so containers keep
+            // computing their own bounds here exactly as before, which still
+            // skips their whole subtree in one test when off-screen.
+            var visible = param.visibleSet,
+                indexed = visible && !this.hasChildren();
+            if (indexed ? !visible.has(this._id)
+                    : !param.viewBounds.intersects(
+                        this.getStrokeBounds(viewMatrix)))
+                return;
+        }
 
         // Only keep track of transformation if told so. See Project#draw()
         matrices.push(globalMatrix);

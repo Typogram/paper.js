@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FastCanvasView parity</title>
+<script type="text/javascript">
+document.write('<script src="'
+        + (/[?&]bundle=([^&]+)/.exec(location.search)
+            ? decodeURIComponent(RegExp.$1)
+            : '../../dist/paper-full.js')
+        + '"><\/script>');
+</script>
+<style>
+    body { margin: 0; font: 12px sans-serif; background: #fff; }
+    .pair { display: flex; }
+    canvas { background: #fff; }
+</style>
+</head>
+<body>
+<div class="pair">
+    <canvas id="stock" width="480" height="480"></canvas>
+    <canvas id="fast" width="480" height="480"
+            data-paper-renderer="canvas-fast"></canvas>
+</div>
+<script type="text/javascript">
+// Scatters items across an area larger than the canvas - the case both
+// FastCanvasView optimizations exist for - then exercises the transitions
+// that matter: a small pan (should blit), a big pan (should fall back to a
+// real redraw, re-centering the buffer), and a zoom (always a real redraw).
+// Everything is read back after each step so a broken blit offset or a
+// grid that silently drops items shows up as a pixel mismatch, not just a
+// wrong "mode" label.
+function mulberry32(seed) {
+    return function() {
+        seed |= 0;
+        seed = (seed + 0x6D2B79F5) | 0;
+        var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+function buildScene(scope, count, seed, world) {
+    scope.activate();
+    scope.project.clear();
+    var rng = mulberry32(seed);
+    for (var i = 0; i < count; i++) {
+        var x = rng() * world,
+            y = rng() * world,
+            shape = i % 9 === 0
+                    ? new scope.Path.Star([x, y], 5, 4.5, 9)
+                    : new scope.Path.Circle([x, y], 3.5 + rng() * 2.5);
+        shape.fillColor = new scope.Color(rng(), 0.6, 0.6);
+        if (i % 23 === 0) {
+            shape.strokeColor = '#141414';
+            shape.strokeWidth = 1.2;
+        }
+    }
+}
+
+function getPixels(id) {
+    var canvas = document.getElementById(id),
+        ctx = canvas.getContext('2d');
+    return Array.prototype.slice.call(
+            ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+}
+
+window.runStep = function(step) {
+    if (!window.__scopes) {
+        var stock = new paper.PaperScope(),
+            fast = new paper.PaperScope();
+        stock.setup(document.getElementById('stock'));
+        fast.setup(document.getElementById('fast'));
+        var WORLD = 3600, COUNT = 4000;
+        buildScene(stock, COUNT, 11, WORLD);
+        buildScene(fast, COUNT, 11, WORLD);
+        fast.view.rebuildIndex();
+        [stock, fast].forEach(function(s) {
+            s.view.zoom = 1;
+            s.view.center = new s.Point(WORLD / 2, WORLD / 2);
+        });
+        window.__scopes = { stock: stock, fast: fast };
+    }
+    var stock = window.__scopes.stock,
+        fast = window.__scopes.fast;
+    if (step === 'initial') {
+        // Nothing to do - both already centered identically above.
+    } else if (step === 'smallPan') {
+        [stock, fast].forEach(function(s) {
+            s.view.center = s.view.center.add([40, -25]);
+        });
+    } else if (step === 'bigPan') {
+        [stock, fast].forEach(function(s) {
+            s.view.center = s.view.center.add([900, 600]);
+        });
+    } else if (step === 'zoom') {
+        [stock, fast].forEach(function(s) { s.view.zoom *= 1.6; });
+    }
+    stock.view.update();
+    fast.view.update();
+    return {
+        pixels: [getPixels('stock'), getPixels('fast')],
+        wasBlit: fast.view._lastWasBlit,
+        indexed: fast.view._lastIndexed
+    };
+};
+</script>
+</body>
+</html>

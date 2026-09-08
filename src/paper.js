@@ -45,6 +45,7 @@ var paper = function(self, undefined) {
 /*#*/ include('util/CollisionDetection.js');
 /*#*/ include('util/Formatter.js');
 /*#*/ include('util/Numerical.js');
+/*#*/ include('util/SpatialGrid.js');
 /*#*/ include('util/UID.js');
 
 // Include Paper classes, which are later injected into PaperScope by setting
@@ -94,6 +95,7 @@ var paper = function(self, undefined) {
 
 /*#*/ include('view/View.js');
 /*#*/ include('view/CanvasView.js');
+/*#*/ include('view/FastCanvasView.js');
 
 /*#*/ if (__options.gpu) {
 /*#*/     include('gpu/GLDevice.js');

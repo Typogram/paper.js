@@ -862,7 +862,7 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         }
     },
 
-    draw: function(ctx, matrix, pixelRatio, viewSize) {
+    draw: function(ctx, matrix, pixelRatio, viewSize, visibleSet) {
         // Increase the _updateVersion before the draw-loop. After that, items
         // that are visible will have their _updateVersion set to the new value.
         this._updateVersion++;
@@ -890,7 +890,11 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
                 viewBounds: viewSize
                         ? new Rectangle(new Point(), viewSize).expand(
                             Math.max(viewSize.width, viewSize.height) * 0.1)
-                        : null
+                        : null,
+                // A precomputed Set of leaf item ids overlapping the
+                // viewport, from a FastCanvasView's spatial index. Optional -
+                // see the note on it in Item#draw().
+                visibleSet: visibleSet || null
             });
         for (var i = 0, l = children.length; i < l; i++) {
             children[i].draw(ctx, param);

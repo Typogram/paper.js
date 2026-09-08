@@ -2454,6 +2454,146 @@ var Numerical = new function() {
  */
 
 /**
+ * @name SpatialGrid
+ * @class A uniform grid over a fixed set of leaf items' bounds, built once in
+ * *project* space rather than device space, so it stays valid across pan and
+ * zoom - only an actual edit to the indexed items requires a rebuild.
+ *
+ * This exists because {@link Item#draw}'s viewport cull check, while cheap
+ * per item, still costs one bounds computation and one rectangle test for
+ * every item in the scene, every frame - fine at a few thousand items, but at
+ * tens of thousands it becomes the floor under panning speed even once every
+ * offscreen item is being correctly skipped. A grid turns "which items are
+ * near the viewport" from an O(n) scan into a handful of bucket lookups, at
+ * the cost of only tracking leaf items and requiring an explicit rebuild
+ * (see {@link FastCanvasView#rebuildIndex}) when the scene's items - not just
+ * the camera - change.
+ *
+ * @private
+ */
+var SpatialGrid = Base.extend(/** @lends SpatialGrid# */{
+    _class: 'SpatialGrid',
+
+    initialize: function SpatialGrid() {
+        this.clear();
+    },
+
+    clear: function() {
+        this._cellSize = 1;
+        this._cols = 0;
+        this._originX = 0;
+        this._originY = 0;
+        // Sparse: keyed by "col,row", each entry an array of item ids.
+        this._cells = {};
+        this._built = false;
+    },
+
+    /**
+     * Rebuilds the grid from the given items' current bounds. Only items
+     * without children are indexed - see the note in Item#draw().
+     *
+     * @param {Item[]} items
+     */
+    build: function(items) {
+        this.clear();
+        var leaves = [],
+            bounds = [],
+            minX = Infinity, minY = Infinity,
+            maxX = -Infinity, maxY = -Infinity;
+        for (var i = 0, l = items.length; i < l; i++) {
+            var item = items[i];
+            if (item.hasChildren())
+                continue;
+            var b = item.getStrokeBounds();
+            if (!b.width && !b.height)
+                continue;
+            leaves.push(item);
+            bounds.push(b);
+            minX = Math.min(minX, b.left);
+            minY = Math.min(minY, b.top);
+            maxX = Math.max(maxX, b.right);
+            maxY = Math.max(maxY, b.bottom);
+        }
+        var count = leaves.length;
+        if (!count)
+            return;
+        // Aim for roughly one item per cell on average: a grid this coarse
+        // keeps the cells-per-query low without each cell holding so many
+        // items that the point of indexing them is lost.
+        var width = Math.max(maxX - minX, 1e-6),
+            height = Math.max(maxY - minY, 1e-6),
+            cellSize = Math.max(Math.sqrt((width * height) / count), 1e-6);
+        this._cellSize = cellSize;
+        this._originX = minX;
+        this._originY = minY;
+        this._cols = Math.max(1, Math.ceil(width / cellSize) + 1);
+        var cells = this._cells;
+        for (var i = 0; i < count; i++) {
+            var item = leaves[i],
+                b = bounds[i],
+                c0 = this._col(b.left), c1 = this._col(b.right),
+                r0 = this._row(b.top), r1 = this._row(b.bottom);
+            for (var r = r0; r <= r1; r++) {
+                for (var c = c0; c <= c1; c++) {
+                    var key = r * this._cols + c,
+                        cell = cells[key];
+                    if (!cell)
+                        cell = cells[key] = [];
+                    cell.push(item._id);
+                }
+            }
+        }
+        this._built = true;
+    },
+
+    _col: function(x) {
+        return Math.floor((x - this._originX) / this._cellSize);
+    },
+
+    _row: function(y) {
+        return Math.floor((y - this._originY) / this._cellSize);
+    },
+
+    /**
+     * @param {Rectangle} rect a rectangle in the same (project) space the
+     *     grid was built in
+     * @return {Set|null} the ids of indexed items whose cell may overlap
+     *     `rect`, or `null` if the grid holds nothing (callers should then
+     *     fall back to the plain per-item bounds check)
+     */
+    query: function(rect) {
+        if (!this._built)
+            return null;
+        var cells = this._cells,
+            c0 = this._col(rect.left), c1 = this._col(rect.right),
+            r0 = this._row(rect.top), r1 = this._row(rect.bottom),
+            result = new Set();
+        for (var r = r0; r <= r1; r++) {
+            for (var c = c0; c <= c1; c++) {
+                var cell = cells[r * this._cols + c];
+                if (cell) {
+                    for (var i = 0, l = cell.length; i < l; i++)
+                        result.add(cell[i]);
+                }
+            }
+        }
+        return result;
+    }
+});
+
+/*
+ * Paper.js - The Swiss Army Knife of Vector Graphics Scripting.
+ * http://paperjs.org/
+ *
+ * Copyright (c) 2011 - 2020, Jürg Lehni & Jonathan Puckey
+ * http://juerglehni.com/ & https://puckey.studio/
+ *
+ * Distributed under the MIT license. See LICENSE file for details.
+ *
+ * All rights reserved.
+ */
+
+/**
  * @name UID
  * @namespace
  * @private
@@ -7061,7 +7201,7 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         }
     },
 
-    draw: function(ctx, matrix, pixelRatio, viewSize) {
+    draw: function(ctx, matrix, pixelRatio, viewSize, visibleSet) {
         // Increase the _updateVersion before the draw-loop. After that, items
         // that are visible will have their _updateVersion set to the new value.
         this._updateVersion++;
@@ -7089,7 +7229,11 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
                 viewBounds: viewSize
                         ? new Rectangle(new Point(), viewSize).expand(
                             Math.max(viewSize.width, viewSize.height) * 0.1)
-                        : null
+                        : null,
+                // A precomputed Set of leaf item ids overlapping the
+                // viewport, from a FastCanvasView's spatial index. Optional -
+                // see the note on it in Item#draw().
+                visibleSet: visibleSet || null
             });
         for (var i = 0, l = children.length; i < l; i++) {
             children[i].draw(ctx, param);
@@ -11540,9 +11684,22 @@ new function() { // Injection scope for hit-test functions shared with project
         // painting itself, so skipping it would corrupt that outline even
         // though the child alone looks safely offscreen.
         if (param.viewBounds && !param.clip && !param.dontStart
-                && !param.dontFinish
-                && !param.viewBounds.intersects(this.getStrokeBounds(viewMatrix)))
-            return;
+                && !param.dontFinish) {
+            // param.visibleSet, when present, is a spatial index's answer to
+            // "which leaf items overlap the viewport", precomputed once per
+            // frame instead of per item - see SpatialGrid and FastCanvasView.
+            // It only covers leaf items: a container's bounds are the union
+            // of its children's, which shift too often for the grid (built
+            // from a one-off scan) to track cheaply, so containers keep
+            // computing their own bounds here exactly as before, which still
+            // skips their whole subtree in one test when off-screen.
+            var visible = param.visibleSet,
+                indexed = visible && !this.hasChildren();
+            if (indexed ? !visible.has(this._id)
+                    : !param.viewBounds.intersects(
+                        this.getStrokeBounds(viewMatrix)))
+                return;
+        }
 
         // Only keep track of transformation if told so. See Project#draw()
         matrices.push(globalMatrix);
@@ -29643,6 +29800,242 @@ var CanvasView = View.extend(/** @lends CanvasView# */{
 // The default rasterizer. Registered here rather than in View.js so that
 // View.create() has no compile-time knowledge of which backends exist.
 View.registerRenderer('canvas', CanvasView);
+
+/*
+ * Paper.js - The Swiss Army Knife of Vector Graphics Scripting.
+ * http://paperjs.org/
+ *
+ * Copyright (c) 2011 - 2020, Jürg Lehni & Jonathan Puckey
+ * http://juerglehni.com/ & https://puckey.studio/
+ *
+ * Distributed under the MIT license. See LICENSE file for details.
+ *
+ * All rights reserved.
+ */
+
+/**
+ * @name FastCanvasView
+ * @class A {@link CanvasView} with two additions, both aimed squarely at
+ * panning/zooming a scene far larger than the viewport - the case that
+ * matters once a document has many more items than are ever onscreen at
+ * once:
+ *
+ * 1. On a frame where only the pan offset changed (not zoom, not the scene's
+ *    content), the previous frame's pixels are reused - shifted into place
+ *    with one `drawImage()` - instead of Paper.js re-walking and redrawing
+ *    every visible item. A small margin is kept pre-rendered around the
+ *    viewport so an ordinary pan stays a pure blit for many frames in a row;
+ *    panning past that margin, or any zoom or content change, falls back to
+ *    a real redraw, which also refreshes the margin.
+ *
+ * 2. Real redraws consult a {@link SpatialGrid} built from the scene's leaf
+ *    items, turning "which items are near the viewport" from a bounds test
+ *    against every item into a handful of bucket lookups. This is what
+ *    makes the redraws that do happen (on zoom, or once panning outruns the
+ *    margin) themselves cheaper, on top of there being far fewer of them.
+ *
+ * Both are opt-in and additive to the existing viewport-cull check in
+ * {@link Item#draw} - nothing here changes {@link CanvasView} or
+ * {@link GLView}, which is what lets all three be compared honestly against
+ * the same scene.
+ *
+ * The grid only reflects the scene as of the last {@link #rebuildIndex}
+ * call: this view does not hook into item add/remove/edit to keep it
+ * current automatically, so a caller that mutates the scene after the
+ * initial build is expected to call it again.
+ *
+ * @private
+ */
+var FastCanvasView = CanvasView.extend(/** @lends FastCanvasView# */{
+    _class: 'FastCanvasView',
+
+    // Fraction of the viewport's own size kept pre-rendered on each side.
+    // Larger buys more pan-without-redraw at the cost of a bigger offscreen
+    // buffer to render and copy from.
+    _pad: 0.5,
+
+    initialize: function FastCanvasView(project, canvas) {
+        FastCanvasView.base.call(this, project, canvas);
+        this._grid = new SpatialGrid();
+        this._buffer = null;
+        this._bufferMatrix = null;
+        this._bufferOffsetX = 0;
+        this._bufferOffsetY = 0;
+        this._bufferSlackX = 0;
+        this._bufferSlackY = 0;
+        // Diagnostics read by the comparison demo.
+        this._lastWasBlit = false;
+        this._blitCount = 0;
+        this._redrawCount = 0;
+        this._lastIndexed = 0;
+    },
+
+    /**
+     * Rebuilds the spatial index from the project's current leaf items.
+     * Call this after adding, removing, or otherwise changing which items
+     * exist - panning and zooming alone never require it.
+     */
+    rebuildIndex: function() {
+        var items = [];
+        (function walk(item) {
+            var children = item._children;
+            if (children) {
+                for (var i = 0, l = children.length; i < l; i++)
+                    walk(children[i]);
+            } else {
+                items.push(item);
+            }
+        })(this._project.activeLayer);
+        this._grid.build(items);
+        // The cached buffer may hold items that no longer exist, or be
+        // missing ones that are now there.
+        this._buffer = null;
+    },
+
+    /**
+     * Discards the pre-rendered pan buffer without touching the spatial
+     * index, forcing the next frame to redraw. Cheaper than
+     * {@link #rebuildIndex} when only style/appearance changed, not the set
+     * of items or their positions.
+     */
+    invalidateBuffer: function() {
+        this._buffer = null;
+    },
+
+    update: function() {
+        if (!this._needsUpdate)
+            return false;
+        var project = this._project,
+            ctx = this._context,
+            size = this._viewSize;
+        if (!project) {
+            ctx.clearRect(0, 0, size.width + 1, size.height + 1);
+            this._needsUpdate = false;
+            return true;
+        }
+
+        var matrix = this._matrix,
+            buffer = this._buffer,
+            bufMatrix = this._bufferMatrix,
+            pixelRatio = this._pixelRatio;
+
+        if (buffer && bufMatrix
+                && matrix._a === bufMatrix._a && matrix._b === bufMatrix._b
+                && matrix._c === bufMatrix._c && matrix._d === bufMatrix._d) {
+            // Same scale/rotation as the cached buffer: only the pan offset
+            // may differ.
+            var dx = (matrix._tx - bufMatrix._tx) * pixelRatio,
+                dy = (matrix._ty - bufMatrix._ty) * pixelRatio;
+            if (Math.abs(dx) <= this._bufferSlackX
+                    && Math.abs(dy) <= this._bufferSlackY) {
+                this._blit(dx, dy);
+                this._lastWasBlit = true;
+                this._blitCount++;
+                this._needsUpdate = false;
+                return true;
+            }
+            // Panned past the margin this buffer covers - redraw below
+            // builds a fresh one, re-centered on the new position.
+        }
+
+        this._redraw();
+        this._lastWasBlit = false;
+        this._redrawCount++;
+        this._needsUpdate = false;
+        return true;
+    },
+
+    /**
+     * Copies the buffer onto the visible canvas, offset by (dx, dy) device
+     * pixels from where it lines up when the pan hasn't moved at all.
+     */
+    _blit: function(dx, dy) {
+        var ctx = this._context,
+            size = this._viewSize,
+            pixelRatio = this._pixelRatio;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0,
+                size.width * pixelRatio + 1, size.height * pixelRatio + 1);
+        ctx.drawImage(this._buffer,
+                Math.round(this._bufferOffsetX + dx),
+                Math.round(this._bufferOffsetY + dy));
+        ctx.restore();
+    },
+
+    _redraw: function() {
+        var size = this._viewSize,
+            matrix = this._matrix,
+            pixelRatio = this._pixelRatio,
+            pad = this._pad,
+            project = this._project;
+
+        // Rendered once into a padded offscreen buffer - never straight onto
+        // the visible canvas - so the buffer this frame produces is always
+        // ready for the next frame's pan to reuse via #_blit(), rather than
+        // paying for the same content twice (once on-screen, once padded).
+        var padWidth = size.width * pad,
+            padHeight = size.height * pad,
+            bufWidthCss = size.width + padWidth * 2,
+            bufHeightCss = size.height + padHeight * 2,
+            bufWidth = Math.ceil(bufWidthCss * pixelRatio),
+            bufHeight = Math.ceil(bufHeightCss * pixelRatio);
+        if (bufWidth <= 0 || bufHeight <= 0)
+            return;
+
+        var buffer = this._buffer;
+        if (!buffer || buffer.width !== bufWidth
+                || buffer.height !== bufHeight) {
+            buffer = this._buffer = document.createElement('canvas');
+            buffer.width = bufWidth;
+            buffer.height = bufHeight;
+        }
+        var bufCtx = buffer.getContext('2d');
+        bufCtx.setTransform(1, 0, 0, 1, 0, 0);
+        bufCtx.clearRect(0, 0, bufWidth + 1, bufHeight + 1);
+        bufCtx.scale(pixelRatio, pixelRatio);
+        // Same matrix, shifted so the padded region's top-left lands at the
+        // buffer's own origin - see the class comment.
+        var bufMatrix = matrix.clone();
+        bufMatrix._tx += padWidth;
+        bufMatrix._ty += padHeight;
+        // Queried against the *original*, unshifted matrix: the world-space
+        // rectangle a padded region covers is the same regardless of which
+        // (shifted or not) device-space matrix ends up rendering it.
+        var visible = this._queryGrid(matrix, size, pad);
+        this._lastIndexed = visible ? visible.size : 0;
+        project.draw(bufCtx, bufMatrix, pixelRatio,
+                new Size(bufWidthCss, bufHeightCss), visible);
+
+        this._bufferMatrix = matrix.clone();
+        this._bufferOffsetX = -padWidth * pixelRatio;
+        this._bufferOffsetY = -padHeight * pixelRatio;
+        this._bufferSlackX = padWidth * pixelRatio;
+        this._bufferSlackY = padHeight * pixelRatio;
+        // The buffer now holds this frame's content, so use it rather than
+        // drawing the same scene a second time straight to the canvas.
+        this._blit(0, 0);
+    },
+
+    /**
+     * @param {Matrix} matrix the *unshifted* view matrix
+     * @param {Size} size the (unpadded) viewport size, in CSS pixels
+     * @param {Number} pad extra fraction of `size` to include on each side
+     * @return {Set|null} see {@link SpatialGrid#query}
+     */
+    _queryGrid: function(matrix, size, pad) {
+        var worldRect = matrix.inverted()._transformBounds(
+                new Rectangle(new Point(-size.width * pad, -size.height * pad),
+                        new Size(size.width * (1 + 2 * pad),
+                                size.height * (1 + 2 * pad))));
+        return this._grid.query(worldRect);
+    }
+});
+
+// A second, opt-in Canvas2D backend: same rasterizer, added viewport
+// awareness. Registered under its own key so it has to be asked for
+// explicitly (data-paper-renderer="canvas-fast"), never picked as a default.
+View.registerRenderer('canvas-fast', FastCanvasView);
 
 
 /*
