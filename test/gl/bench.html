@@ -24,8 +24,7 @@ window.bench = function(renderer, count, frames, kind, applyMatrix, cache) {
     fresh.width = canvas.width;
     fresh.height = canvas.height;
     fresh.id = 'bench';
-    if (renderer !== 'canvas')
-        fresh.setAttribute('data-paper-renderer', renderer);
+    fresh.setAttribute('data-paper-renderer', renderer);
     canvas.parentNode.replaceChild(fresh, canvas);
 
     var scope = new paper.PaperScope();
