@@ -55,6 +55,24 @@ var CanvasProvider = Base.exports.CanvasProvider = {
         return canvas ? canvas.getContext('2d', options || {}) : null;
     },
 
+    // A canvas with no context bound to it yet, so a caller that doesn't
+    // know which kind it needs (2D or WebGL2) can still decide. Never
+    // pooled: every canvas that goes through the pool above is committed
+    // to '2d' before it's handed out, and a canvas can only ever provide
+    // one kind of context.
+    getUncommittedCanvas: function(width, height) {
+        if (!window)
+            return null;
+        if (typeof width === 'object') {
+            height = width.height;
+            width = width.width;
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        return canvas;
+    },
+
      // release can receive either a canvas or a context.
     release: function(obj) {
         var canvas = obj && obj.canvas ? obj.canvas : obj;

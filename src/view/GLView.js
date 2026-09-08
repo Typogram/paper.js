@@ -20,9 +20,11 @@
  * scene traversal, style application and compositing — is shared with the
  * canvas renderer.
  *
- * This view is never created implicitly. It is opt-in, either per element
- * through a `data-paper-renderer="webgl"` attribute or globally through
- * `paper.settings.renderer`. See {@link View.create}.
+ * `PaperScope#settings.renderer` defaults to `'auto'`, so this is the view
+ * every new scope creates wherever WebGL2 is available, falling back to
+ * {@link CanvasView} otherwise. A single element can still be pinned to a
+ * specific renderer through a `data-paper-renderer` attribute, or a scope
+ * through `paper.settings.renderer`. See {@link View.create}.
  *
  * @private
  */

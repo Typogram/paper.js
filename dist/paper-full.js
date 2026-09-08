@@ -1355,9 +1355,10 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
             hitTolerance: 0,
             // The rasterizer that new views use, unless the element opts into
             // a different one through a `data-paper-renderer` attribute:
-            // 'canvas' (the default), 'webgl', or 'auto' to prefer the GPU
-            // renderer wherever it is available. See View.create().
-            renderer: 'canvas'
+            // 'canvas', 'webgl', or 'auto' (the default) to prefer the GPU
+            // renderer wherever it is available, falling back to 'canvas'
+            // otherwise. See View.create().
+            renderer: 'auto'
         });
         this.project = null;
         this.projects = [];
@@ -6400,8 +6401,13 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         // If no view is provided, we create a 1x1 px canvas view just so we
         // have something to do size calculations with.
         // (e.g. PointText#_getBounds)
+        // NOTE: Deliberately not CanvasProvider.getCanvas(): it calls
+        // getContext('2d') on the canvas it returns, and a canvas can only
+        // ever hand out one kind of context. View.create() below still needs
+        // to choose the renderer, so the canvas it receives must not be
+        // committed to '2d' already.
         this._view = View.create(this,
-                element || CanvasProvider.getCanvas(1, 1));
+                element || CanvasProvider.getUncommittedCanvas(1, 1));
         this._selectionItems = {};
         this._selectionCount = 0;
         // See Item#draw() for an explanation of _updateVersion
@@ -29153,7 +29159,25 @@ var View = Base.extend(Emitter, /** @lends View# */{
                 name = 'canvas';
             }
             ctor = (renderers[name] || renderers.canvas).ctor;
-            return new ctor(project, element);
+            if (name === 'canvas')
+                return new ctor(project, element);
+            // isSupported() above only checks that the browser can create a
+            // WebGL2 context in general, e.g. on a throwaway canvas. It
+            // can't rule out a construction failure specific to this
+            // element or moment (already bound to a different context type,
+            // the browser's live-context limit, a lost/failing driver...),
+            // so 'auto' and an explicit 'webgl' both still need a fallback
+            // here to make good on "never fail if it is not [available]".
+            try {
+                return new ctor(project, element);
+            } catch (e) {
+                if (window.console && console.warn) {
+                    console.warn('paper.js: creating the "' + name
+                            + '" renderer failed (' + e.message
+                            + '), falling back to "canvas".');
+                }
+                return new renderers.canvas.ctor(project, element);
+            }
         },
 
         _isSupported: function(name) {
@@ -32534,9 +32558,11 @@ GLGradient._parse = function(value) {
  * scene traversal, style application and compositing — is shared with the
  * canvas renderer.
  *
- * This view is never created implicitly. It is opt-in, either per element
- * through a `data-paper-renderer="webgl"` attribute or globally through
- * `paper.settings.renderer`. See {@link View.create}.
+ * `PaperScope#settings.renderer` defaults to `'auto'`, so this is the view
+ * every new scope creates wherever WebGL2 is available, falling back to
+ * {@link CanvasView} otherwise. A single element can still be pinned to a
+ * specific renderer through a `data-paper-renderer` attribute, or a scope
+ * through `paper.settings.renderer`. See {@link View.create}.
  *
  * @private
  */
@@ -34295,6 +34321,24 @@ var CanvasProvider = Base.exports.CanvasProvider = {
     getContext: function(width, height, options) {
         var canvas = this.getCanvas(width, height, options);
         return canvas ? canvas.getContext('2d', options || {}) : null;
+    },
+
+    // A canvas with no context bound to it yet, so a caller that doesn't
+    // know which kind it needs (2D or WebGL2) can still decide. Never
+    // pooled: every canvas that goes through the pool above is committed
+    // to '2d' before it's handed out, and a canvas can only ever provide
+    // one kind of context.
+    getUncommittedCanvas: function(width, height) {
+        if (!window)
+            return null;
+        if (typeof width === 'object') {
+            height = width.height;
+            width = width.width;
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        return canvas;
     },
 
      // release can receive either a canvas or a context.

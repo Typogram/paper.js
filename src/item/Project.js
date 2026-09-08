@@ -61,8 +61,13 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         // If no view is provided, we create a 1x1 px canvas view just so we
         // have something to do size calculations with.
         // (e.g. PointText#_getBounds)
+        // NOTE: Deliberately not CanvasProvider.getCanvas(): it calls
+        // getContext('2d') on the canvas it returns, and a canvas can only
+        // ever hand out one kind of context. View.create() below still needs
+        // to choose the renderer, so the canvas it receives must not be
+        // committed to '2d' already.
         this._view = View.create(this,
-                element || CanvasProvider.getCanvas(1, 1));
+                element || CanvasProvider.getUncommittedCanvas(1, 1));
         this._selectionItems = {};
         this._selectionCount = 0;
         // See Item#draw() for an explanation of _updateVersion
