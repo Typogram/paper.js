@@ -1,0 +1,34 @@
+{
+  "name": "paper",
+  "version": "0.12.18",
+  "description": "The Swiss Army Knife of Vector Graphics Scripting",
+  "license": "MIT",
+  "homepage": "http://paperjs.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperjs/paper.js"
+  },
+  "bugs": "https://github.com/paperjs/paper.js/issues",
+  "contributors": [
+    "Jürg Lehni <juerg@scratchdisk.com> (http://scratchdisk.com)",
+    "Jonathan Puckey <jonathan@puckey.studio> (http://studiomoniker.com)"
+  ],
+  "main": "dist/paper-full.js",
+  "types": "dist/paper.d.ts",
+  "browser": {
+    "./dist/node/extend.js": false,
+    "./dist/node/self.js": false,
+    "canvas": false,
+    "jsdom": false,
+    "jsdom/lib/jsdom/living/generated/utils": false,
+    "source-map-support": false
+  },
+  "engines": {
+    "node": ">=8.0.0"
+  },
+  "files": [
+    "dist/",
+    "LICENSE.txt",
+    "README.md"
+  ]
+}
