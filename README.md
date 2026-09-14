@@ -1,3 +1,17 @@
+<!-- Generated branch. Do not edit: see tools/make-dist-branch.js. -->
+
+> **This branch is the built package and nothing else**, so that the
+> fork can be installed straight from git:
+>
+> ```sh
+> npm i github:Typogram/paper.js#dist-only
+> ```
+>
+> It installs under the name `paper`, so it is imported as
+> `import paper from 'paper'` and drops into an app already using
+> upstream Paper.js with no other change. The rest of this readme
+> describes the same library published as `@typogram/paper.js`.
+
 # @typogram/paper.js
 
 Paper.js with an SVG renderer.
