@@ -1,5 +1,8 @@
 node_modules/
 /dist/*/
+# dist/node is required by the bundle at runtime on Node, and the bundles are
+# committed on this branch, so it is committed with them.
+!/dist/node/
 /dist/*.min.js
 /dist/paperjs.zip
 # Yarn
@@ -11,3 +14,8 @@ node_modules/
 !.yarn/sdks
 !.yarn/versions
 .pnp.js
+# The SvelteKit package / landing page project keeps its own ignores
+/site/node_modules/
+/site/.svelte-kit/
+/site/build/
+/site/dist/

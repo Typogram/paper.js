@@ -1,5 +1,17 @@
 # Change Log
 
+## Unreleased
+
+### Added
+
+- Add `SvgView`, a renderer that mirrors the project into a native SVG DOM tree
+  instead of rasterizing it into a canvas on each frame. Panning and zooming
+  then cost one attribute update, regardless of the number of items. It is
+  selected through the new `paper.settings.renderer` setting, through a
+  `renderer="svg"` / `data-paper-renderer="svg"` attribute on the element passed
+  to `paper.setup()`, or by passing an `<svg>` element to it. The Paper.js API
+  is identical for both renderers.
+
 ## `0.12.18`
 
 ### Fixed

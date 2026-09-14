@@ -81,6 +81,12 @@ var test = function(testName, expected) {
             View._resetState();
         }
 
+        // The suite tests the Canvas2D renderer — it compares rendered pixels
+        // and reaches for the view's context — so pin it, rather than follow
+        // paper.settings.renderer, which defaults to 'svg' in this fork. The
+        // SvgView module opts back in explicitly.
+        paper.settings.renderer = 'canvas';
+
         // Instantiate project with 100x100 pixels canvas instead of default
         // 1x1 to make interactions tests simpler by working with integers.
         currentProject = new Project(new Size(100, 100));

@@ -179,8 +179,12 @@ var Style = Base.extend(new function() {
                 if (old !== value) {
                     if (isColor) {
                         // The old value may be a native string or other color
-                        // description that wasn't coerced to a color object yet
-                        if (old) {
+                        // description that wasn't coerced to a color object
+                        // yet, and there is nothing to clear on one of those.
+                        // Writing to it is a silent no-op in sloppy mode, but
+                        // throws when the library runs as an ES module, where
+                        // strict mode applies.
+                        if (old && typeof old === 'object') {
                             Color._setOwner(old, null);
                             old._canvasStyle = null;
                         }

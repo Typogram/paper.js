@@ -44,10 +44,11 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
      * Note that when working with PaperScript, a project is automatically
      * created for us and the {@link PaperScope#project} variable points to it.
      *
-     * @param {HTMLCanvasElement|String|Size} element the HTML canvas element
-     * that should be used as the element for the view, or an ID string by which
-     * to find the element, or the size of the canvas to be created for usage in
-     * a web worker.
+     * @param {HTMLCanvasElement|SVGSVGElement|String|Size} [element] the element
+     * that should be used as the element for the view - an `<svg>` for the SVG
+     * renderer, a `<canvas>` for the canvas one - or an ID string by which to
+     * find the element, or the size of the canvas to be created for usage in a
+     * web worker.
      */
     initialize: function Project(element) {
         // Activate straight away by passing true to PaperScopeItem constructor,
@@ -58,11 +59,14 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         this._namedChildren = {};
         this._activeLayer = null;
         this._currentStyle = new Style(null, null, this);
-        // If no view is provided, we create a 1x1 px canvas view just so we
-        // have something to do size calculations with.
-        // (e.g. PointText#_getBounds)
-        this._view = View.create(this,
-                element || CanvasProvider.getCanvas(1, 1));
+        // If no view is provided, we create a 1x1 px view just so we have
+        // something to do size calculations with. (e.g. PointText#_getBounds)
+        // Pass the size rather than an element, so each View subclass creates
+        // the kind of element it actually renders into.
+        // Passed through as given, undefined included: View.create()
+        // distinguishes a scope set up with no argument - which never
+        // paints - from one given an explicit size.
+        this._view = View.create(this, element);
         this._selectionItems = {};
         this._selectionCount = 0;
         // See Item#draw() for an explanation of _updateVersion

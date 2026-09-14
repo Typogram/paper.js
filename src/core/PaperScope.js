@@ -52,7 +52,8 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
             applyMatrix: true,
             insertItems: true,
             handleSize: 4,
-            hitTolerance: 0
+            hitTolerance: 0,
+            renderer: 'svg'
         });
         this.project = null;
         this.projects = [];
@@ -132,6 +133,19 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
      *     when drawing selections
      * @option [settings.hitTolerance=0] {Number} the default tolerance for hit-
      *     tests, when no value is specified
+     * @option [settings.renderer='svg'] {String} the renderer that
+     *     {@link PaperScope#setup(element)} creates views with: `'svg'`
+     *     mirrors the project into a native SVG DOM tree, where panning and
+     *     zooming are handled by the browser, `'canvas'` rasterizes it into a
+     *     2D canvas on each frame, which is what upstream Paper.js does. Both
+     *     provide the exact same API. It can also be set per view, through a
+     *     `renderer` / `data-paper-renderer` attribute on the element. Note
+     *     that the SVG renderer replaces a `<canvas>` it is handed with an
+     *     `<svg>` element, so an app holding its own reference to that canvas
+     *     should either render an `<svg>` element itself or opt that view out
+     *     with `renderer="canvas"`. A scope set up without an element is
+     *     always canvas-backed, whatever this is set to: it never paints, so
+     *     there is nothing for the SVG renderer to be faster at
      */
 
     /**
@@ -242,18 +256,29 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
         // fields on PaperScope.prototype, e.g. all classes
         for (var key in this)
             // Exclude all 'hidden' fields
-            if (!/^_/.test(key) && this[key])
-                scope[key] = this[key];
+            if (!/^_/.test(key) && this[key]) {
+                // Some of the exported names are read-only on a window, e.g.
+                // `document` and `window` itself. Assigning to those is a
+                // silent no-op in sloppy mode but throws when the library runs
+                // as an ES module, where strict mode applies - and the scope
+                // already has the very value that would have been copied.
+                try {
+                    scope[key] = this[key];
+                } catch (e) {}
+            }
     },
 
     /**
-     * Sets up an empty project for us. If a canvas is provided, it also creates
-     * a {@link View} for it, both linked to this scope.
+     * Sets up an empty project for us. If an element is provided, it also
+     * creates a {@link View} for it, both linked to this scope.
      *
-     * @param {HTMLCanvasElement|String|Size} element the HTML canvas element
-     * this scope should be associated with, or an ID string by which to find
-     * the element, or the size of the canvas to be created for usage in a web
-     * worker.
+     * @param {HTMLCanvasElement|SVGSVGElement|String|Size} [element] the element
+     * this scope should be associated with - an `<svg>` for the SVG renderer,
+     * a `<canvas>` for the canvas one - or an ID string by which to find the
+     * element, or the size of the canvas to be created for usage in a web
+     * worker. Note that the SVG renderer replaces a `<canvas>` it is handed
+     * with an `<svg>` of its own, so passing the element the chosen renderer
+     * wants is what keeps the caller's reference to it live.
      */
     setup: function(element) {
         // Make sure this is the active scope, so the created project and view

@@ -1,3 +1,99 @@
+# Paper.js, rendered as SVG
+
+This is a fork of [Paper.js](http://paperjs.org/) that adds a second renderer.
+
+Stock Paper.js redraws the whole scene into a canvas on every frame, so panning
+a document with tens of thousands of items costs a full scene traversal per
+frame. This fork is upstream **Paper.js 0.12.18** plus a renderer that mirrors
+the scene graph into a native SVG DOM tree and keeps one node per item alive.
+Moving the camera then costs a single `transform` attribute, no matter how many
+items the document holds.
+
+Everything else is upstream Paper.js: the same items, styles, tools, events,
+`hitTest()`, import and export.
+
+**[Live comparison and benchmark →](https://paper-js.pages.dev)**
+
+## Install
+
+```sh
+npm i github:Typogram/paper.js#dist-only
+```
+
+The `dist-only` branch carries the built bundles and upstream's own
+package.json, so it installs as `paper`, in one step, with no build:
+
+```js
+import paper from 'paper';
+
+paper.setup(canvas);
+new paper.Path.Circle({ center: [80, 50], radius: 35, fillColor: 'red' });
+```
+
+The renderer is chosen per view, so a single canvas can opt out:
+
+```js
+paper.settings.renderer = 'canvas'; // per scope, before setup()
+```
+
+```html
+<canvas data-paper-renderer="canvas"></canvas>
+<!-- or hand setup() an <svg> element, which always selects the SVG renderer -->
+```
+
+## Know this before you switch
+
+- **The element is swapped.** Handed a `<canvas>`, the view replaces it with an
+  `<svg>` and puts the original back on `remove()`. Code holding its own
+  reference to that canvas — a framework ref, listeners bound to it, or
+  `canvas.toDataURL()` for a thumbnail — should render an `<svg>` element
+  itself, or opt that view out. To read pixels, go through `Item#rasterize()`,
+  which makes its own canvas either way.
+- **Five blend modes render as `normal`.** `add` maps to CSS `plus-lighter` and
+  the other 15 map to the CSS mode of the same name, but `subtract`, `average`,
+  `pin-light` and `negation` have no CSS equivalent — Paper.js emulates those in
+  JavaScript for the canvas renderer, which a DOM tree cannot do.
+- **Browser only.** The SVG renderer needs a DOM. For Node.js rendering, use the
+  canvas renderer or upstream `paper`.
+
+Full design notes, including what the renderer costs and where it wins, are in
+[`src/view/README.md`](src/view/README.md).
+
+## Working on this fork
+
+`dist/` is committed on this branch, and `site/scripts/sync-paper.js` reads the
+**built** bundle rather than `src/`. So after changing anything under `src/`:
+
+```sh
+node tools/build.js          # -> dist/paper-full.js
+node tools/build.js --core   # -> dist/paper-core.js
+```
+
+`gulp build` does not run under modern Node; `tools/build.js` drives the same
+Prepro setup and is the supported path on this branch.
+
+The landing page lives in [`site/`](site/README.md) and is a SvelteKit project:
+
+```sh
+cd site && npm ci
+npm run dev                  # against the bundle in ../dist
+```
+
+To build the library, build the page and deploy it to Cloudflare Pages in one
+step — in that order, so a deploy cannot ship a stale bundle:
+
+```sh
+./tools/deploy.sh
+```
+
+`tools/make-dist-branch.js` regenerates the installable `dist-only` branch.
+
+---
+
+The rest of this file is upstream Paper.js's own documentation. Note that
+`npm install paper` below installs **upstream** Paper.js, not this fork — see
+[Install](#install) above for this one.
+
 # Paper.js - The Swiss Army Knife of Vector Graphics Scripting [![Build Status](https://travis-ci.org/paperjs/paper.js.svg?branch=develop)](https://travis-ci.org/paperjs/paper.js) [![NPM](https://img.shields.io/npm/v/paper.svg)](https://www.npmjs.com/package/paper)
 
 If you want to work with Paper.js, simply download the latest "stable" version

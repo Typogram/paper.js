@@ -68,4 +68,6 @@
 // There is no need to test interactions in node context.
 if (!isNodeContext) {
     /*#*/ include('Interactions.js');
+    // The SVG renderer inspects the rendered DOM, which requires a browser.
+    /*#*/ include('SvgView.js');
 }

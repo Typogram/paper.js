@@ -25,7 +25,19 @@ var View = Base.extend(Emitter, /** @lends View# */{
     initialize: function View(project, element) {
 
         function getSize(name) {
-            return element[name] || parseInt(element.getAttribute(name), 10);
+            var value = element[name];
+            // SVG elements expose width and height as SVGAnimatedLength
+            // objects, rather than as the plain numbers a canvas provides.
+            // Relative lengths throw if they cannot be resolved, e.g. on
+            // elements that aren't inserted into the document.
+            if (value && typeof value === 'object') {
+                try {
+                    value = value.baseVal.value;
+                } catch (e) {
+                    value = null;
+                }
+            }
+            return value || parseInt(element.getAttribute(name), 10);
         }
 
         function getCanvasSize() {
@@ -334,10 +346,11 @@ var View = Base.extend(Emitter, /** @lends View# */{
     },
 
     /**
-     * The underlying native element.
+     * The underlying native element: the `<svg>` an {@link SvgView} renders
+     * into, or the `<canvas>` a {@link CanvasView} draws on.
      *
      * @bean
-     * @type HTMLCanvasElement
+     * @type HTMLCanvasElement|SVGSVGElement
      */
     getElement: function() {
         return this._element;
@@ -1020,12 +1033,50 @@ var View = Base.extend(Emitter, /** @lends View# */{
         _viewsById: {},
         _id: 0,
 
+        /**
+         * Factory that provides the right View subclass for a given element.
+         * On workers, where there is no DOM to render into, the base View
+         * class is used. In the browser, the renderer is chosen by, in order
+         * of precedence:
+         *
+         * - a view set up with no argument at all is always CanvasView
+         * - a `renderer` / `data-paper-renderer` attribute on the element
+         * - the `paper.settings.renderer` setting ('svg' by default in this
+         *   fork, 'canvas' being what upstream Paper.js does)
+         * - the type of the element itself, so that passing an `<svg>` element
+         *   selects the SVG renderer whatever the setting says
+         *
+         * Both renderers implement the same View interface, so switching
+         * between them requires no other change to an application.
+         */
         create: function(project, element) {
             if (document && typeof element === 'string')
                 element = document.getElementById(element);
-            // Factory to provide the right View subclass for a given element.
-            // Produces only CanvasView or View items (for workers) for now:
-            var ctor = window ? CanvasView : View;
+            // `paper.setup()` with no argument at all - the shape a scope
+            // used only for serialization, cloning and export takes - has no
+            // element to render into and no size to render at, so it gets a
+            // nominal one. Such a view is in no document and never paints:
+            // mirroring the scene into a detached SVG tree on every change
+            // would be pure cost, and canvas is what `Item#rasterize()` goes
+            // through anyway, so it is CanvasView whatever the renderer
+            // setting says. A Size passed deliberately is a different thing -
+            // an offscreen view of a known size - and still gets the renderer
+            // that was asked for.
+            var viewless = element == null;
+            if (viewless)
+                element = new Size(1, 1);
+            var ctor = View;
+            if (window) {
+                var renderer = !viewless && element.getAttribute
+                        && PaperScope.getAttribute(element, 'renderer')
+                        || project._scope.settings.renderer;
+                ctor = CanvasView;
+/*#*/ if (__options.svg) {
+                if (!viewless && (renderer === 'svg' || element.nodeName
+                        && element.nodeName.toLowerCase() === 'svg'))
+                    ctor = SvgView;
+/*#*/ }
+            }
             return new ctor(project, element);
         }
     }
