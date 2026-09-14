@@ -1443,7 +1443,9 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
      *     that the SVG renderer replaces a `<canvas>` it is handed with an
      *     `<svg>` element, so an app holding its own reference to that canvas
      *     should either render an `<svg>` element itself or opt that view out
-     *     with `renderer="canvas"`
+     *     with `renderer="canvas"`. A scope set up without an element is
+     *     always canvas-backed, whatever this is set to: it never paints, so
+     *     there is nothing for the SVG renderer to be faster at
      */
 
     /**
@@ -28934,6 +28936,7 @@ var View = Base.extend(Emitter, /** @lends View# */{
          * class is used. In the browser, the renderer is chosen by, in order
          * of precedence:
          *
+         * - a view with no element at all is always CanvasView, see below
          * - a `renderer` / `data-paper-renderer` attribute on the element
          * - the `paper.settings.renderer` setting ('svg' by default in this
          *   fork, 'canvas' being what upstream Paper.js does)
@@ -28948,12 +28951,22 @@ var View = Base.extend(Emitter, /** @lends View# */{
                 element = document.getElementById(element);
             var ctor = View;
             if (window) {
-                var renderer = element && element.getAttribute
+                // `paper.setup()` with no element - the shape a scope used
+                // only for serialization, cloning and export takes - reaches
+                // here with the Size that Project substitutes rather than a
+                // node. Such a view is in no document and never paints, so
+                // mirroring the scene into a detached SVG tree on every
+                // change is pure cost, and canvas is what `Item#rasterize()`
+                // goes through anyway. Those views are CanvasView whatever
+                // the renderer setting says, which also keeps
+                // `setup(size)` doing what it does upstream.
+                var hasElement = !!element && element.nodeType === 1,
+                    renderer = hasElement && element.getAttribute
                         && PaperScope.getAttribute(element, 'renderer')
                         || project._scope.settings.renderer;
                 ctor = CanvasView;
-                if (renderer === 'svg' || element && element.nodeName
-                        && element.nodeName.toLowerCase() === 'svg')
+                if (hasElement && (renderer === 'svg' || element.nodeName
+                        && element.nodeName.toLowerCase() === 'svg'))
                     ctor = SvgView;
             }
             return new ctor(project, element);
