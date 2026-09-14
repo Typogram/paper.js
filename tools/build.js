@@ -52,10 +52,17 @@ var argv = process.argv.slice(2),
 
 // src/options.js carries no date - gulp/utils/options.js fills it in from the
 // last commit, and without it the banner reads `Date: undefined`.
+//
+// Taken from the last commit that touched src/, rather than the last commit
+// outright as gulp does. The bundles are committed on this branch, so a banner
+// tracking every commit would leave dist/ dirty after any docs or tooling
+// change, and the date means the same thing either way: when these sources
+// last moved.
 var date;
 try {
     date = require('child_process')
-            .execSync('git log -1 --pretty=format:%ad', { cwd: path.resolve(__dirname, '..') })
+            .execSync('git log -1 --pretty=format:%ad -- src/',
+                { cwd: path.resolve(__dirname, '..') })
             .toString().trim();
 } catch (e) {}
 

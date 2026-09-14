@@ -27,7 +27,10 @@
     "test": "gulp test",
     "test:browser": "gulp test:browser",
     "test:phantom": "gulp test:phantom",
-    "test:node": "gulp test:node"
+    "test:node": "gulp test:node",
+    "build:bundles": "node tools/build.js && node tools/build.js --core",
+    "build:dist-branch": "node tools/make-dist-branch.js",
+    "deploy": "./tools/deploy.sh"
   },
   "files": [
     "AUTHORS.md",

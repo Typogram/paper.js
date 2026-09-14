@@ -61,32 +61,47 @@ Full design notes, including what the renderer costs and where it wins, are in
 
 ## Working on this fork
 
-`dist/` is committed on this branch, and `site/scripts/sync-paper.js` reads the
-**built** bundle rather than `src/`. So after changing anything under `src/`:
+Install with **yarn**, not npm. `package.json` pins `graceful-fs` to 4.2.2
+through yarn's `resolutions`, which is the only reason the repo's gulp 3 runs on
+a current Node; npm ignores `resolutions` and gulp then dies on `primordials is
+not defined`.
 
 ```sh
-node tools/build.js          # -> dist/paper-full.js
-node tools/build.js --core   # -> dist/paper-core.js
+yarn install
 ```
 
-`gulp build` does not run under modern Node; `tools/build.js` drives the same
-Prepro setup and is the supported path on this branch.
+### Which command, and when
 
-The landing page lives in [`site/`](site/README.md) and is a SvelteKit project:
+| After you… | Run | Why |
+| --- | --- | --- |
+| change anything under `src/` | `yarn build:bundles` | `dist/` is committed on this branch, and nothing rebuilds it for you |
+| want the page locally | `cd site && npm ci && npm run dev` | serves the landing page against the bundle in `../dist` |
+| want the page live | `yarn deploy` | builds the library, then the page, then uploads — in that order |
+| change `src/`, and an app installs this fork | `yarn build:dist-branch`, then push `dist-only` | apps install from that branch; it is not regenerated automatically |
+
+The order in the first and last rows is the part worth remembering.
+`site/scripts/sync-paper.js` reads the **built** bundle in `dist/`, not `src/`,
+and it only fails when `dist/` is missing — never when it is merely stale. So a
+page built without `yarn build:bundles` first will ship the previous renderer
+silently. `yarn deploy` exists so that ordering is not yours to remember.
+
+### The commands
 
 ```sh
-cd site && npm ci
-npm run dev                  # against the bundle in ../dist
+yarn build:bundles       # node tools/build.js && node tools/build.js --core
+yarn build:dist-branch   # regenerate the installable dist-only branch
+yarn deploy              # build library -> build page -> deploy to Cloudflare
 ```
 
-To build the library, build the page and deploy it to Cloudflare Pages in one
-step — in that order, so a deploy cannot ship a stale bundle:
+`yarn build` (upstream's `gulp build`) produces the same bundles, byte for byte,
+apart from stamping the branch name into the version — which is why
+`tools/build.js` is what the scripts above and the `dist-only` generator use.
+Everything else in `package.json` is upstream's and works as documented below,
+except `yarn test:node`, which needs the native `canvas` module (`brew install
+cairo pango`, then reinstall).
 
-```sh
-./tools/deploy.sh
-```
-
-`tools/make-dist-branch.js` regenerates the installable `dist-only` branch.
+The landing page lives in [`site/`](site/README.md) and is a SvelteKit project;
+its own readme covers building and packaging it.
 
 ---
 
