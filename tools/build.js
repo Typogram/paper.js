@@ -1,9 +1,26 @@
-// Minimal stand-in for `gulp build`, which does not run under modern Node.
-// Builds src/paper.js through the same Prepro.js setup as gulp/tasks/build.js.
+// Builds src/paper.js the way `gulp build` does, without gulp.
 //
 //   node tools/build.js          -> dist/paper-full.js (the package's `main`)
 //   node tools/build.js --core   -> dist/paper-core.js (without PaperScript)
 //   node tools/build.js --out some/other/path.js
+//
+// `gulp build` itself does still run under modern Node, as long as the tree was
+// installed with yarn: gulp 3 pulls in graceful-fs 3, which monkey-patches
+// internals removed in Node 12, and package.json pins it back to 4.2.2 through
+// yarn's `resolutions`. npm ignores `resolutions`, so an npm-installed tree
+// gets graceful-fs 3 and gulp dies on `primordials is not defined`. This script
+// avoids the question, and needs `prepro` rather than the whole gulp chain.
+//
+// It runs the same three steps gulp/tasks/build.js does - prepro, uncomment,
+// whitespace - so the output matches what upstream publishes. Skipping the last
+// two leaves every JSDoc block in the bundle, which is a 3x difference: 1.36MB
+// against 475KB, and 318KB against 122KB gzipped.
+//
+// One deliberate difference: gulp/utils/options.js appends the branch name to
+// the version for any branch but master, so `gulp build` stamps the banner
+// `0.12.18-<branch>` and relies on its publish task to undo that. Here the
+// banner stays at the plain version, which is what the dist-only package.json
+// declares.
 //
 // On this branch the resulting bundles are committed, so that the fork can be
 // installed straight from git (`npm i github:Typogram/paper.js#branch`) with no
@@ -13,7 +30,19 @@
 var fs = require('fs'),
     path = require('path'),
     Prepro = require('prepro'),
+    uncomment = require('uncomment'),
     options = require('../src/options.js');
+
+// What gulp-whitespace does with the options gulp/tasks/build.js passes it
+// ({ spacesToTabs: 4, removeTrailing: true }), inlined so this does not need
+// the plugin - it is a gulp stream wrapper around exactly these two replaces.
+function whitespace(str) {
+    return str
+        .replace(/^((?: {4})+)/gm, function(all, spaces) {
+            return new Array(spaces.length / 4 + 1).join('\t');
+        })
+        .replace(/[ \t]+$/gm, '');
+}
 
 var argv = process.argv.slice(2),
     outIndex = argv.indexOf('--out'),
@@ -21,14 +50,29 @@ var argv = process.argv.slice(2),
     out = outIndex !== -1 && argv[outIndex + 1]
         || (core ? 'dist/paper-core.js' : 'dist/paper-full.js');
 
+// src/options.js carries no date - gulp/utils/options.js fills it in from the
+// last commit, and without it the banner reads `Date: undefined`.
+var date;
+try {
+    date = require('child_process')
+            .execSync('git log -1 --pretty=format:%ad', { cwd: path.resolve(__dirname, '..') })
+            .toString().trim();
+} catch (e) {}
+
 var prepro = new Prepro();
 prepro.evaluate(path.resolve(__dirname, '../src/constants.js'));
 prepro.setup(function() {
     return {
-        __options: Object.assign({}, options, { paperScript: !core })
+        __options: Object.assign({}, options, {
+            paperScript: !core,
+            date: date || options.date
+        })
     };
 });
-var output = prepro.process(path.resolve(__dirname, '../src/paper.js')),
+// The same pipeline as gulp/tasks/build.js: prepro -> uncomment -> whitespace.
+var output = whitespace(uncomment(
+        prepro.process(path.resolve(__dirname, '../src/paper.js')),
+        { mergeEmptyLines: true })),
     file = path.resolve(__dirname, '..', out),
     dir = path.dirname(file);
 if (!fs.existsSync(dir))
