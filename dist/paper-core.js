@@ -6279,7 +6279,10 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
         // something to do size calculations with. (e.g. PointText#_getBounds)
         // Pass the size rather than an element, so each View subclass creates
         // the kind of element it actually renders into.
-        this._view = View.create(this, element || new Size(1, 1));
+        // Passed through as given, undefined included: View.create()
+        // distinguishes a scope set up with no argument - which never
+        // paints - from one given an explicit size.
+        this._view = View.create(this, element);
         this._selectionItems = {};
         this._selectionCount = 0;
         // See Item#draw() for an explanation of _updateVersion
@@ -28938,7 +28941,7 @@ var View = Base.extend(Emitter, /** @lends View# */{
          * class is used. In the browser, the renderer is chosen by, in order
          * of precedence:
          *
-         * - a view with no element at all is always CanvasView, see below
+         * - a view set up with no argument at all is always CanvasView
          * - a `renderer` / `data-paper-renderer` attribute on the element
          * - the `paper.settings.renderer` setting ('svg' by default in this
          *   fork, 'canvas' being what upstream Paper.js does)
@@ -28951,23 +28954,26 @@ var View = Base.extend(Emitter, /** @lends View# */{
         create: function(project, element) {
             if (document && typeof element === 'string')
                 element = document.getElementById(element);
+            // `paper.setup()` with no argument at all - the shape a scope
+            // used only for serialization, cloning and export takes - has no
+            // element to render into and no size to render at, so it gets a
+            // nominal one. Such a view is in no document and never paints:
+            // mirroring the scene into a detached SVG tree on every change
+            // would be pure cost, and canvas is what `Item#rasterize()` goes
+            // through anyway, so it is CanvasView whatever the renderer
+            // setting says. A Size passed deliberately is a different thing -
+            // an offscreen view of a known size - and still gets the renderer
+            // that was asked for.
+            var viewless = element == null;
+            if (viewless)
+                element = new Size(1, 1);
             var ctor = View;
             if (window) {
-                // `paper.setup()` with no element - the shape a scope used
-                // only for serialization, cloning and export takes - reaches
-                // here with the Size that Project substitutes rather than a
-                // node. Such a view is in no document and never paints, so
-                // mirroring the scene into a detached SVG tree on every
-                // change is pure cost, and canvas is what `Item#rasterize()`
-                // goes through anyway. Those views are CanvasView whatever
-                // the renderer setting says, which also keeps
-                // `setup(size)` doing what it does upstream.
-                var hasElement = !!element && element.nodeType === 1,
-                    renderer = hasElement && element.getAttribute
+                var renderer = !viewless && element.getAttribute
                         && PaperScope.getAttribute(element, 'renderer')
                         || project._scope.settings.renderer;
                 ctor = CanvasView;
-                if (hasElement && (renderer === 'svg' || element.nodeName
+                if (!viewless && (renderer === 'svg' || element.nodeName
                         && element.nodeName.toLowerCase() === 'svg'))
                     ctor = SvgView;
             }
@@ -32999,6 +33005,29 @@ var SvgView = View.extend(new function() {
     }
 
     /**
+     * Takes the nodes a view put into an `<svg>` back out of it, leaving
+     * anything else in the element untouched.
+     *
+     * An element the view replaced is thrown away whole, so only elements it
+     * adopted - an `<svg>` the application rendered itself, which stays the
+     * application's - need this. It runs at both ends of the view's life: on
+     * #remove(), so nothing is left on screen that no view updates any more,
+     * and when a view adopts an element, so that a view that was never
+     * removed cannot leave its scene behind for this one to draw on top of.
+     */
+    function clearNodes(svg) {
+        var nodes = svg.__paperNodes;
+        if (nodes) {
+            for (var i = 0, l = nodes.length; i < l; i++) {
+                var node = nodes[i];
+                if (node.parentNode === svg)
+                    svg.removeChild(node);
+            }
+            svg.__paperNodes = null;
+        }
+    }
+
+    /**
      * Sets or removes an attribute, but only if its value actually changed.
      * Assigning the value an attribute already holds still costs an style
      * invalidation in some browsers, and updates are the common case here.
@@ -33162,6 +33191,14 @@ var SvgView = View.extend(new function() {
             if (element && element.nodeName
                     && element.nodeName.toLowerCase() === 'svg') {
                 svg = element;
+                // A view that rendered into this element before leaves its
+                // nodes behind if it was not removed, and `project.remove();
+                // setup(element)` - what deserializing over a live view does,
+                // an undo for instance - would then add a second set beside
+                // them and draw both scenes at once. Only the nodes a paper
+                // view made are taken out; anything the document itself put
+                // in the element stays where it is.
+                clearNodes(svg);
             } else {
                 if (element && element.nodeType === 1) {
                     // An element that a previous view already took over stands
@@ -33248,6 +33285,9 @@ var SvgView = View.extend(new function() {
             svg.appendChild(this._defs);
             svg.appendChild(this._content);
             svg.appendChild(this._overlay);
+            // What #remove() takes out again, and what a later view adopting
+            // this same element clears before it renders.
+            svg.__paperNodes = [this._defs, this._content, this._overlay];
             this._matrixValue = null;
             // Activate the change tracking in Project#_changed(), which is what
             // lets #update() only touch the items that actually changed.
@@ -33278,6 +33318,12 @@ var SvgView = View.extend(new function() {
                 this._measureContext = null;
             }
             var removed = remove.base.call(this);
+            // An element this view adopted rather than replaced is the
+            // caller's, and it stays in the document - so the nodes this view
+            // put in it have to come out, or they would still be on screen
+            // with no view left to update them.
+            if (removed && svg && !replaced)
+                clearNodes(svg);
             // Put the caller's element back where it was, so the page is left
             // as it was found and a later setup() on that element works.
             if (removed && replaced) {
