@@ -28,11 +28,14 @@ Everything else is upstream Paper.js: the same items, styles, tools, events,
 package.
 
 ```sh
-npm install @typogram/paper.js
+npm i github:Typogram/paper.js#dist-only
 ```
 
+It installs under the name `paper`, so nothing that already imports `paper` has
+to change:
+
 ```js
-import paper from '@typogram/paper.js';
+import paper from 'paper';
 
 paper.setup(canvas);
 new paper.Path.Circle({ center: [80, 50], radius: 35, fillColor: 'red' });
@@ -108,7 +111,7 @@ example `0.12.18-1`, or move to `0.13.x` once upstream does).
 
 - Live comparison and docs: the landing page in this package's repository
 - Source: <https://github.com/Typogram/paper.js> (branch
-  `claude/serene-cori-k63fhi`, renderer docs in `src/view/README.md`)
+  `paperjs-svg-renderer`, renderer docs in `src/view/README.md`)
 - Upstream Paper.js: <http://paperjs.org/>
 
 MIT, like Paper.js itself.
