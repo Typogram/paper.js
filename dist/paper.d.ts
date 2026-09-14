@@ -3373,7 +3373,7 @@ declare namespace paper {
          * the element, or the size of the canvas to be created for usage in a web
          * worker.
          */
-        setup(element: HTMLCanvasElement | string | SizeLike): void
+        setup(element?: HTMLCanvasElement | SVGSVGElement | string | SizeLike): void
 
         /** 
          * Activates this PaperScope, so all newly created items will be placed
@@ -5027,7 +5027,7 @@ declare namespace paper {
          * to find the element, or the size of the canvas to be created for usage in
          * a web worker.
          */
-        constructor(element: HTMLCanvasElement | string | SizeLike)
+        constructor(element?: HTMLCanvasElement | SVGSVGElement | string | SizeLike)
 
         /** 
          * Activates this project, so all newly created items will be placed
@@ -6974,7 +6974,7 @@ declare namespace paper {
         /** 
          * The underlying native element.
          */
-        readonly element: HTMLCanvasElement
+        readonly element: HTMLCanvasElement | SVGSVGElement
 
         /** 
          * The ratio between physical pixels and device-independent pixels (DIPs)

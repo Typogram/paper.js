@@ -1564,13 +1564,16 @@ var PaperScope = Base.extend(/** @lends PaperScope# */{
     },
 
     /**
-     * Sets up an empty project for us. If a canvas is provided, it also creates
-     * a {@link View} for it, both linked to this scope.
+     * Sets up an empty project for us. If an element is provided, it also
+     * creates a {@link View} for it, both linked to this scope.
      *
-     * @param {HTMLCanvasElement|String|Size} element the HTML canvas element
-     * this scope should be associated with, or an ID string by which to find
-     * the element, or the size of the canvas to be created for usage in a web
-     * worker.
+     * @param {HTMLCanvasElement|SVGSVGElement|String|Size} [element] the element
+     * this scope should be associated with - an `<svg>` for the SVG renderer,
+     * a `<canvas>` for the canvas one - or an ID string by which to find the
+     * element, or the size of the canvas to be created for usage in a web
+     * worker. Note that the SVG renderer replaces a `<canvas>` it is handed
+     * with an `<svg>` of its own, so passing the element the chosen renderer
+     * wants is what keeps the caller's reference to it live.
      */
     setup: function(element) {
         // Make sure this is the active scope, so the created project and view
@@ -6257,10 +6260,11 @@ var Project = PaperScopeItem.extend(/** @lends Project# */{
      * Note that when working with PaperScript, a project is automatically
      * created for us and the {@link PaperScope#project} variable points to it.
      *
-     * @param {HTMLCanvasElement|String|Size} element the HTML canvas element
-     * that should be used as the element for the view, or an ID string by which
-     * to find the element, or the size of the canvas to be created for usage in
-     * a web worker.
+     * @param {HTMLCanvasElement|SVGSVGElement|String|Size} [element] the element
+     * that should be used as the element for the view - an `<svg>` for the SVG
+     * renderer, a `<canvas>` for the canvas one - or an ID string by which to
+     * find the element, or the size of the canvas to be created for usage in a
+     * web worker.
      */
     initialize: function Project(element) {
         // Activate straight away by passing true to PaperScopeItem constructor,
@@ -28241,10 +28245,11 @@ var View = Base.extend(Emitter, /** @lends View# */{
     },
 
     /**
-     * The underlying native element.
+     * The underlying native element: the `<svg>` an {@link SvgView} renders
+     * into, or the `<canvas>` a {@link CanvasView} draws on.
      *
      * @bean
-     * @type HTMLCanvasElement
+     * @type HTMLCanvasElement|SVGSVGElement
      */
     getElement: function() {
         return this._element;
