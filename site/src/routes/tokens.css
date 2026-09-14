@@ -1,0 +1,74 @@
+/* Design tokens for the landing page. Dark is the default look: this is a
+   rendering-pipeline page, and the stage reads best against a dim ground. */
+:root {
+  color-scheme: dark;
+  --ink-950: #0b0e13;
+  --ink-900: #12161d;
+  --ink-800: #1a212b;
+  --line: #262e3a;
+  --text: #e7ebf1;
+  --text-dim: #8b95a5;
+  --stock: #5ec8d8;
+  --svg: #9d7bf0;
+  --state-good: #7bd88f;
+  --state-bad: #ff6b6b;
+  --shadow: 0 20px 50px -20px rgb(0 0 0 / 0.6);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+    --ink-950: #f6f4f0;
+    --ink-900: #ffffff;
+    --ink-800: #fbfaf6;
+    --line: #ddd8cd;
+    --text: #201d18;
+    --text-dim: #746c5f;
+    --stock: #0f8fa3;
+    --svg: #6a3fd6;
+    --state-good: #1f9d55;
+    --state-bad: #c62f27;
+    --shadow: 0 20px 50px -24px rgb(30 25 15 / 0.18);
+  }
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --ink-950: #f6f4f0;
+  --ink-900: #ffffff;
+  --ink-800: #fbfaf6;
+  --line: #ddd8cd;
+  --text: #201d18;
+  --text-dim: #746c5f;
+  --stock: #0f8fa3;
+  --svg: #6a3fd6;
+  --state-good: #1f9d55;
+  --state-bad: #c62f27;
+  --shadow: 0 20px 50px -24px rgb(30 25 15 / 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--ink-950);
+}
+
+body {
+  margin: 0;
+  background: var(--ink-950);
+  color: var(--text);
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+img {
+  max-width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}

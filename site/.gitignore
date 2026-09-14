@@ -1,0 +1,9 @@
+node_modules
+.svelte-kit
+build
+dist
+# package-lock.json is committed: Cloudflare Pages builds this directory with
+# `npm ci`, which requires it, and it keeps deploys reproducible.
+# Generated from ../dist by scripts/sync-paper.js
+src/lib/index.js
+src/lib/index.d.ts
