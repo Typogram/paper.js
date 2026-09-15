@@ -130,39 +130,40 @@ from re-encoding the pixels — is untouched.
 
 Covered by: *Raster#smoothing reaches the node as soon as it is set*.
 
+### 4. Reparenting into an existing group threw the node away
+
+Moving an item between two groups queues `CHILDREN` on the old owner and
+`INSERTION` on the item. `_processChanges()` collected owners in the order it
+met them, so the old owner was synchronized first — and at that point the node
+had not moved yet, so the trailing-children sweep in `_syncChildren()` disposed
+it. The new owner then found no node and built a fresh one, along with the
+whole subtree below it.
+
+Nothing rendered wrongly, but the renderer's central promise — one DOM node per
+item, kept alive and updated in place — did not hold for reparenting, and
+anything attached to that node went with it.
+
+The `INSERTION` branch now moves the node into the new owner's node as soon as
+the new owner is known, rather than leaving that to the sweep. Reordering the
+owners instead would have been ambiguous, since one owner can both lose and
+gain in the same batch. A reorder within one parent is a no-op, a clip-mask item
+is appended and then moved into its `clipPath` by `_setClip()`, and an item
+whose new owner has no node yet still goes through `_createItem()` as before.
+
+Covered by: *Reparenting reuses the node the item already has*,
+*Reparenting keeps the order of the new owner's children*.
+
+### 5. A raster re-encoded its pixels when it was reparented — fixed with #4
+
+The rebuilt `<image>` had no `__src` cached, so the pixels were serialized
+again: a full PNG encode for a canvas-backed raster. `_updateGeometry()` goes to
+real trouble to avoid exactly that on every move, and a reparent defeated it.
+Reusing the node keeps the cache.
+
+Covered by: the last assertion of *Rasters only re-encode when their pixels
+change*.
+
 ## Still open
-
-### 4. Reparenting into an existing group throws the node away
-
-Moving an item between two groups queues two changes: `CHILDREN` on the old
-owner and `INSERTION` on the item. `_processChanges()` collects owners in the
-order it meets them, so the old owner is synchronized first — at which point
-the node has not moved yet, so the trailing-children sweep in `_syncChildren()`
-disposes it. The new owner then finds no node and builds a fresh one, along
-with the whole subtree below it.
-
-Nothing renders wrongly, but the renderer's central promise — one DOM node per
-item, kept alive and updated in place — does not hold for reparenting. Anything
-attached to that node is lost with it: CSS transitions in flight, a caching
-`__src`, anything an application put on the element.
-
-It works when the destination group is created in the same batch
-(`new Group([item])`), because that group has no node yet when the old owner is
-swept — which is why the original test for this passed.
-
-Fix: synchronize the gaining owner before the losing one, or move the node out
-of the old parent when the insertion is processed rather than during the sweep.
-
-Pinned by: *GAP 4: reparenting into an existing group rebuilds the node*.
-
-### 5. A raster re-encodes its pixels when it is reparented
-
-Follows directly from #4: the rebuilt `<image>` has no `__src` cached, so the
-pixels are serialized again — a full PNG encode for a canvas-backed raster.
-`_updateGeometry()` goes to real trouble to avoid exactly this on every move,
-and a reparent defeats it.
-
-Pinned by: *GAP 5: a raster re-encodes its pixels when it is reparented*.
 
 ### 6. Symbol definitions are never released
 

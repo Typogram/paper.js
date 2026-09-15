@@ -693,6 +693,77 @@ test('Reordering reuses the nodes it already has', function() {
     equals(layer.childNodes.length, 3, 'And adds none');
 });
 
+test('Reparenting reuses the node the item already has', function() {
+    // Moving between two owners queues a change on each, and the one the item
+    // left is synchronized first - so the node has to be taken out of the old
+    // parent when the insertion is seen, or the sweep at the end of
+    // #_syncChildren() takes it for a removed item and disposes it, subtree
+    // and all.
+    var scope = createSvgScope();
+    var from = new scope.Group(),
+        to = new scope.Group(),
+        path = new scope.Path.Circle({ center: [20, 20], radius: 5,
+            fillColor: 'red' });
+    from.addChild(path);
+    scope.view.update();
+    var before = nodeFor(scope, path);
+
+    to.addChild(path);
+    scope.view.update();
+    equals(nodeFor(scope, path), before, 'The same node is reused');
+    equals(before.parentNode, nodeFor(scope, to), 'Under the new owner');
+    equals(nodeFor(scope, from).childNodes.length, 0,
+            'And out of the old one');
+    equals(getItemNodes(scope).length, 1, 'It still renders exactly once');
+
+    // A whole subtree keeps its nodes too, not just the item that moved.
+    var inner = new scope.Group([
+            new scope.Path.Circle({ center: [60, 60], radius: 5,
+                fillColor: 'blue' })
+        ]),
+        leaf = inner.firstChild;
+    from.addChild(inner);
+    scope.view.update();
+    var innerNode = nodeFor(scope, inner),
+        leafNode = nodeFor(scope, leaf);
+    to.addChild(inner);
+    scope.view.update();
+    equals(nodeFor(scope, inner), innerNode, 'A moved group keeps its node');
+    equals(nodeFor(scope, leaf), leafNode, 'And so does what is inside it');
+    equals(leafNode.parentNode, innerNode, 'Still nested as it was');
+
+    // Into a group created in the same batch it already worked, because that
+    // group has no node yet when the old owner is swept.
+    var fresh = new scope.Group([path]);
+    scope.view.update();
+    equals(nodeFor(scope, path), before, 'A newly created group reuses it too');
+    equals(before.parentNode, nodeFor(scope, fresh), 'And adopts the node');
+});
+
+test('Reparenting keeps the order of the new owner\'s children', function() {
+    var scope = createSvgScope();
+    var from = new scope.Group(),
+        a = new scope.Path.Circle({ center: [10, 10], radius: 5,
+            fillColor: 'red' }),
+        b = new scope.Path.Circle({ center: [30, 30], radius: 5,
+            fillColor: 'blue' }),
+        to = new scope.Group([a, b]),
+        moved = new scope.Path.Circle({ center: [50, 50], radius: 5,
+            fillColor: 'green' });
+    from.addChild(moved);
+    scope.view.update();
+    // Insert it between the two, rather than at the end where the move puts
+    // it: the owner's synchronization has to walk it back into place.
+    to.insertChild(1, moved);
+    scope.view.update();
+    var children = nodeFor(scope, to).childNodes;
+    equals(children.length, 3, 'All three are under the new owner');
+    equals(children[0], nodeFor(scope, a), 'The first child is unmoved');
+    equals(children[1], nodeFor(scope, moved),
+            'The moved node landed at its index, not at the end');
+    equals(children[2], nodeFor(scope, b), 'And the last one moved along');
+});
+
 test('Nested groups nest their nodes', function() {
     var scope = createSvgScope();
     var leaf = new scope.Path.Circle({ center: [50, 50], radius: 5,
@@ -1630,6 +1701,14 @@ test('Rasters only re-encode when their pixels change', function(assert) {
     raster.setImageData(raster.getImageData());
     scope.view.update();
     equals(encodes > 0, true, 'Changing its pixels does');
+
+    // Nor does moving it to another parent: the node is reused, so the source
+    // it has already cached is still on it.
+    encodes = 0;
+    var group = new scope.Group();
+    group.addChild(raster);
+    scope.view.update();
+    equals(encodes, 0, 'And neither does reparenting it');
     raster.toDataURL = toDataURL;
     done();
 });
@@ -1974,66 +2053,6 @@ test('Serializing a project does not mention the renderer', function() {
 // ---------------------------------------------------------------------------
 
 QUnit.module('SvgView divergences', { teardown: svgViewTeardown });
-
-test('GAP 4: reparenting into an existing group rebuilds the node', function() {
-    // The owner losing the child and the owner gaining it are both queued, and
-    // the loser is synchronized first - by which point the node has not moved
-    // yet, so it is disposed, and the new owner has to build a fresh one. Into
-    // a group created in the same batch it works, because that group's node
-    // does not exist yet when the old owner is swept.
-    var scope = createSvgScope();
-    var from = new scope.Group(),
-        to = new scope.Group(),
-        path = new scope.Path.Circle({ center: [20, 20], radius: 5,
-            fillColor: 'red' });
-    from.addChild(path);
-    scope.view.update();
-    var before = nodeFor(scope, path);
-    to.addChild(path);
-    scope.view.update();
-    equals(getItemNodes(scope).length, 1, 'It still renders exactly once');
-    equals(nodeFor(scope, path).parentNode, nodeFor(scope, to),
-            'And ends up under the right parent');
-    equals(nodeFor(scope, path) === before, false,
-            'GAP: but as a new node, not the one it already had');
-
-    // Into a group that is created in the same batch, the node does survive.
-    var other = createSvgScope();
-    var moved = new other.Path.Circle({ center: [20, 20], radius: 5,
-        fillColor: 'red' });
-    other.view.update();
-    var kept = nodeFor(other, moved);
-    new other.Group([moved]);
-    other.view.update();
-    equals(nodeFor(other, moved), kept,
-            'Into a newly created group the same node is reused');
-});
-
-test('GAP 5: a raster re-encodes its pixels when it is reparented', function() {
-    // Follows from GAP 4: the rebuilt node has no cached source, so the pixels
-    // are serialized again - a full PNG encode for a canvas-backed raster.
-    var scope = createSvgScope();
-    var source = document.createElement('canvas');
-    source.width = source.height = 8;
-    source.getContext('2d').fillRect(0, 0, 8, 8);
-    var from = new scope.Group(),
-        to = new scope.Group(),
-        raster = new scope.Raster(source);
-    raster.position = [50, 50];
-    from.addChild(raster);
-    scope.view.update();
-    var encodes = 0,
-        toDataURL = raster.toDataURL;
-    raster.toDataURL = function() {
-        encodes++;
-        return toDataURL.apply(this, arguments);
-    };
-    to.addChild(raster);
-    scope.view.update();
-    raster.toDataURL = toDataURL;
-    equals(encodes, 1,
-            'GAP: moving a raster between groups costs a re-encode');
-});
 
 test('GAP 6: a symbol definition is never released', function() {
     // Definitions are keyed by SymbolDefinition id and only ever added. A

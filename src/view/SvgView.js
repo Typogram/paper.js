@@ -575,6 +575,22 @@ var SvgView = View.extend(new function() {
                     var owner = item._getOwner();
                     if (owner) {
                         addOwner(owner);
+                        // Moving between two owners queues a change on each,
+                        // and the one the item left is usually synchronized
+                        // first - at which point the node is still among its
+                        // children, so the sweep at the end of #_syncChildren()
+                        // takes it for a removed item and throws it away,
+                        // subtree and all. Take it out here instead, while it
+                        // is known where it is going: the new owner's
+                        // synchronization then moves it from the end to its
+                        // proper index. A reorder within one owner is a no-op,
+                        // and an owner whose own node does not exist yet is
+                        // left to #_createItem(), as before.
+                        var moved = nodes[item._id],
+                            ownerNode = owner === project ? this._content
+                                : nodes[owner._id];
+                        if (moved && ownerNode && moved.parentNode !== ownerNode)
+                            ownerNode.appendChild(moved);
                     } else {
                         this._removeItem(item);
                     }

@@ -9,7 +9,7 @@
  *
  * All rights reserved.
  *
- * Date: Mon Sep 14 21:52:12 2026 -0400
+ * Date: Mon Sep 14 21:53:11 2026 -0400
  *
  ***
  *
@@ -16093,6 +16093,11 @@ var SvgView = View.extend(new function() {
 					var owner = item._getOwner();
 					if (owner) {
 						addOwner(owner);
+						var moved = nodes[item._id],
+							ownerNode = owner === project ? this._content
+								: nodes[owner._id];
+						if (moved && ownerNode && moved.parentNode !== ownerNode)
+							ownerNode.appendChild(moved);
 					} else {
 						this._removeItem(item);
 					}
