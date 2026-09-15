@@ -675,16 +675,16 @@ var SvgView = View.extend(new function() {
                     setAttr(node, 'ry', num(radius.height));
                 }
             } else if (cls === 'Raster') {
-                var size = item.getSize(),
-                    smoothing = item.getSmoothing();
+                var size = item.getSize();
                 setAttr(node, 'x', num(-size.width / 2));
                 setAttr(node, 'y', num(-size.height / 2));
                 setAttr(node, 'width', num(size.width));
                 setAttr(node, 'height', num(size.height));
                 // Match the way CanvasView stretches rasters into their size.
                 setAttr(node, 'preserveAspectRatio', 'none');
-                setAttr(node, 'image-rendering',
-                        smoothing === 'off' ? 'pixelated' : null);
+                // Note that smoothing is written by #_updateStyle(), since
+                // Raster#setSmoothing() reports it as an attribute change and
+                // those do not reach here.
                 // Serializing the pixels is expensive - for a raster backed by
                 // a canvas it means encoding a PNG - so only do it when they
                 // can actually have changed. A move carries GEOMETRY too, and
@@ -831,6 +831,15 @@ var SvgView = View.extend(new function() {
                 setAttr(node, 'text-anchor', justification === 'center'
                         ? 'middle'
                         : justification === 'right' ? 'end' : null);
+            } else if (item._class === 'Raster') {
+                // Raster#setSmoothing() reports Change.ATTRIBUTE, which is
+                // what it is - an appearance change, not a geometric one - so
+                // it arrives here rather than in #_updateGeometry(), and this
+                // is where the attribute has to be written. Writing it there
+                // meant it kept whatever the last geometry change left, and
+                // only caught up when an unrelated move came along.
+                setAttr(node, 'image-rendering',
+                        item.getSmoothing() === 'off' ? 'pixelated' : null);
             }
         },
 

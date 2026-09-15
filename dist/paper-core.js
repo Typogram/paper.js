@@ -9,7 +9,7 @@
  *
  * All rights reserved.
  *
- * Date: Mon Sep 14 21:49:32 2026 -0400
+ * Date: Mon Sep 14 21:52:12 2026 -0400
  *
  ***
  *
@@ -16168,15 +16168,12 @@ var SvgView = View.extend(new function() {
 					setAttr(node, 'ry', num(radius.height));
 				}
 			} else if (cls === 'Raster') {
-				var size = item.getSize(),
-					smoothing = item.getSmoothing();
+				var size = item.getSize();
 				setAttr(node, 'x', num(-size.width / 2));
 				setAttr(node, 'y', num(-size.height / 2));
 				setAttr(node, 'width', num(size.width));
 				setAttr(node, 'height', num(size.height));
 				setAttr(node, 'preserveAspectRatio', 'none');
-				setAttr(node, 'image-rendering',
-						smoothing === 'off' ? 'pixelated' : null);
 				if (!node.__src || flags & pixelFlags) {
 					var image = item.getImage(),
 						src = image && image.src && !/^data:/.test(image.src)
@@ -16289,6 +16286,9 @@ var SvgView = View.extend(new function() {
 				setAttr(node, 'text-anchor', justification === 'center'
 						? 'middle'
 						: justification === 'right' ? 'end' : null);
+			} else if (item._class === 'Raster') {
+				setAttr(node, 'image-rendering',
+						item.getSmoothing() === 'off' ? 'pixelated' : null);
 			}
 		},
 

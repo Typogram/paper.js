@@ -112,25 +112,25 @@ definition while it is still alive.
 
 Covered by: *Promoting an existing child to clip mask keeps its node*.
 
-## Still open
-
-### 3. `Raster#smoothing` does not take effect until something else changes
+### 3. `Raster#smoothing` did not take effect until something else changed
 
 `Raster#setSmoothing()` reports `Change.ATTRIBUTE`
-([src/item/Raster.js:514](src/item/Raster.js#L514)). `SvgView#_updateItem()`
-routes `ATTRIBUTE` into `styleFlags`, so only `_updateStyle()` runs — but
-`image-rendering` is written by `_updateGeometry()`. The attribute therefore
-keeps whatever value the last *geometry* change left, and only catches up when
-an unrelated move or resize happens to come along.
+([src/item/Raster.js:514](src/item/Raster.js#L514)), which is what it is — an
+appearance change, not a geometric one — and is right for canvas, which redraws
+wholesale. `_updateItem()` routes `ATTRIBUTE` into `styleFlags` and so to
+`_updateStyle()`, but `image-rendering` was written by `_updateGeometry()`. The
+attribute therefore kept whatever the last *geometry* change had left, and only
+caught up when an unrelated move or resize came along: set `smoothing = 'off'`
+and nothing happened until you nudged the raster, at which point it snapped to
+pixelated. Both directions were affected.
 
-The observable shape of this: set `smoothing = 'off'` after creating a raster
-and it stays smoothed, until you nudge the raster, at which point it snaps to
-pixelated. Both directions are affected.
+The write moved to `_updateStyle()`, as a `Raster` branch beside the existing
+`PointText` one. The `__src` caching in `_updateGeometry()` — what keeps a move
+from re-encoding the pixels — is untouched.
 
-Fix: either write `image-rendering` from `_updateStyle()`, or add
-`ChangeFlag.ATTRIBUTE` to the flags that reach `_updateGeometry()` for rasters.
+Covered by: *Raster#smoothing reaches the node as soon as it is set*.
 
-Pinned by: *GAP 3: Raster#smoothing only applies on a geometry change*.
+## Still open
 
 ### 4. Reparenting into an existing group throws the node away
 

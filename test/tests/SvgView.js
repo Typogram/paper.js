@@ -1567,6 +1567,38 @@ test('Rasters are rendered as images', function() {
             'Scaling it is a transform change, not a geometry one');
 });
 
+test('Raster#smoothing reaches the node as soon as it is set', function() {
+    // Raster#setSmoothing() reports Change.ATTRIBUTE - an appearance change,
+    // not a geometric one - so the attribute is written by the style pass. It
+    // used to be written by the geometry pass, which attribute changes do not
+    // reach, so it lagged until an unrelated move came along.
+    var scope = createSvgScope();
+    var source = document.createElement('canvas');
+    source.width = source.height = 4;
+    source.getContext('2d').fillRect(0, 0, 4, 4);
+    var raster = new scope.Raster(source);
+    raster.position = [50, 50];
+    scope.view.update();
+    var node = nodeFor(scope, raster);
+    equals(node.getAttribute('image-rendering'), null,
+            'The default smoothing writes nothing');
+    raster.smoothing = 'off';
+    scope.view.update();
+    equals(node.getAttribute('image-rendering'), 'pixelated',
+            'Switching it off is written straight away');
+    raster.smoothing = 'low';
+    scope.view.update();
+    equals(node.getAttribute('image-rendering'), null,
+            'And switching it back on clears it again');
+    // Set before the first update, it has to be there from the start too.
+    var other = new scope.Raster(source);
+    other.position = [20, 20];
+    other.smoothing = 'off';
+    scope.view.update();
+    equals(nodeFor(scope, other).getAttribute('image-rendering'), 'pixelated',
+            'A raster created with it off is rendered with it off');
+});
+
 test('Rasters only re-encode when their pixels change', function(assert) {
     var done = assert.async();
     var scope = createSvgScope();
@@ -1942,32 +1974,6 @@ test('Serializing a project does not mention the renderer', function() {
 // ---------------------------------------------------------------------------
 
 QUnit.module('SvgView divergences', { teardown: svgViewTeardown });
-
-test('GAP 3: Raster#smoothing only applies on a geometry change', function() {
-    // Raster#setSmoothing() reports Change.ATTRIBUTE, which the renderer routes
-    // to its style writer - but image-rendering is written by the geometry
-    // writer. So the attribute is left at whatever the last geometry change saw,
-    // and only catches up when an unrelated move or resize comes along.
-    var scope = createSvgScope();
-    var source = document.createElement('canvas');
-    source.width = source.height = 4;
-    source.getContext('2d').fillRect(0, 0, 4, 4);
-    var raster = new scope.Raster(source);
-    raster.position = [50, 50];
-    scope.view.update();
-    var node = nodeFor(scope, raster);
-    equals(node.getAttribute('image-rendering'), null,
-            'The default smoothing writes nothing');
-    raster.smoothing = 'off';
-    scope.view.update();
-    equals(raster.smoothing, 'off', 'The item took the new value');
-    equals(node.getAttribute('image-rendering'), null,
-            'GAP: but the node did not, since only the style writer ran');
-    raster.position = raster.position.add([1, 0]);
-    scope.view.update();
-    equals(node.getAttribute('image-rendering'), 'pixelated',
-            'GAP: an unrelated move is what finally applies it');
-});
 
 test('GAP 4: reparenting into an existing group rebuilds the node', function() {
     // The owner losing the child and the owner gaining it are both queued, and
