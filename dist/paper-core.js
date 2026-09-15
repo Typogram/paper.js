@@ -9,7 +9,7 @@
  *
  * All rights reserved.
  *
- * Date: Mon Sep 14 18:01:56 2026 -0400
+ * Date: Mon Sep 14 21:56:14 2026 -0400
  *
  ***
  *
@@ -15936,6 +15936,7 @@ var SvgView = View.extend(new function() {
 			this._nodes = {};
 			this._defs = SvgElement.create('defs');
 			this._symbols = {};
+			this._symbolRefs = {};
 			this._content = SvgElement.create('g', {
 				'pointer-events': 'none'
 			});
@@ -15966,6 +15967,7 @@ var SvgView = View.extend(new function() {
 			}
 			this._nodes = {};
 			this._symbols = {};
+			this._symbolRefs = {};
 			if (measureContext) {
 				CanvasProvider.release(measureContext);
 				this._measureContext = null;
@@ -16093,6 +16095,11 @@ var SvgView = View.extend(new function() {
 					var owner = item._getOwner();
 					if (owner) {
 						addOwner(owner);
+						var moved = nodes[item._id],
+							ownerNode = owner === project ? this._content
+								: nodes[owner._id];
+						if (moved && ownerNode && moved.parentNode !== ownerNode)
+							ownerNode.appendChild(moved);
 					} else {
 						this._removeItem(item);
 					}
@@ -16168,15 +16175,12 @@ var SvgView = View.extend(new function() {
 					setAttr(node, 'ry', num(radius.height));
 				}
 			} else if (cls === 'Raster') {
-				var size = item.getSize(),
-					smoothing = item.getSmoothing();
+				var size = item.getSize();
 				setAttr(node, 'x', num(-size.width / 2));
 				setAttr(node, 'y', num(-size.height / 2));
 				setAttr(node, 'width', num(size.width));
 				setAttr(node, 'height', num(size.height));
 				setAttr(node, 'preserveAspectRatio', 'none');
-				setAttr(node, 'image-rendering',
-						smoothing === 'off' ? 'pixelated' : null);
 				if (!node.__src || flags & pixelFlags) {
 					var image = item.getImage(),
 						src = image && image.src && !/^data:/.test(image.src)
@@ -16228,8 +16232,31 @@ var SvgView = View.extend(new function() {
 				this._defs.appendChild(def);
 			}
 			if (node.__href !== id) {
+				var previous = node.__href,
+					refs = this._symbolRefs;
 				node.__href = id;
+				refs[id] = (refs[id] || 0) + 1;
 				SvgElement.set(node, { href: '#' + id });
+				if (previous)
+					this._releaseSymbol(previous);
+			}
+		},
+
+		_releaseSymbol: function(id) {
+			var refs = this._symbolRefs,
+				count = (refs[id] || 0) - 1;
+			if (count > 0) {
+				refs[id] = count;
+				return;
+			}
+			delete refs[id];
+			var def = this._symbols[id];
+			if (def) {
+				delete this._symbols[id];
+				while (def.firstChild)
+					this._disposeNode(def.firstChild);
+				if (def.parentNode === this._defs)
+					this._defs.removeChild(def);
 			}
 		},
 
@@ -16254,8 +16281,9 @@ var SvgView = View.extend(new function() {
 				fillRule = style.getFillRule();
 			this._setPaint(item, node, 'fill', fillColor);
 			this._setPaint(item, node, 'stroke', strokeColor);
-			setAttr(node, 'fill-rule',
-					fillRule && fillRule !== 'nonzero' ? fillRule : null);
+			var rule = fillRule && fillRule !== 'nonzero' ? fillRule : null;
+			setAttr(node, 'fill-rule', rule);
+			setAttr(node, 'clip-rule', rule);
 			setAttr(node, 'stroke-width',
 					strokeColor && strokeWidth !== 1 ? num(strokeWidth) : null);
 			setAttr(node, 'stroke-linecap',
@@ -16288,6 +16316,9 @@ var SvgView = View.extend(new function() {
 				setAttr(node, 'text-anchor', justification === 'center'
 						? 'middle'
 						: justification === 'right' ? 'end' : null);
+			} else if (item._class === 'Raster') {
+				setAttr(node, 'image-rendering',
+						item.getSmoothing() === 'off' ? 'pixelated' : null);
 			}
 		},
 
@@ -16415,7 +16446,7 @@ var SvgView = View.extend(new function() {
 				nodes = this._nodes,
 				childNodes = node.childNodes,
 				index = 0,
-				clipItem = null;
+				clipItem = owner._getClipItem ? owner._getClipItem() : null;
 			for (var i = 0, l = children.length; i < l; i++) {
 				var child = children[i],
 					childNode = nodes[child._id];
@@ -16430,8 +16461,7 @@ var SvgView = View.extend(new function() {
 					if (child instanceof Group)
 						this._syncChildren(child, childNode, true);
 				}
-				if (child._clipMask) {
-					clipItem = child;
+				if (child === clipItem) {
 					continue;
 				}
 				var current = childNodes[index];
@@ -16439,9 +16469,9 @@ var SvgView = View.extend(new function() {
 					node.insertBefore(childNode, current || null);
 				index++;
 			}
+			this._setClip(owner, node, clipItem);
 			while (childNodes.length > index)
 				this._disposeNode(childNodes[index]);
-			this._setClip(owner, node, clipItem);
 		},
 
 		_setClip: function(owner, node, clipItem) {
@@ -16478,12 +16508,17 @@ var SvgView = View.extend(new function() {
 		_disposeNode: function(node) {
 			var nodes = this._nodes,
 				defs = this._defs,
-				stack = [node];
+				stack = [node],
+				hrefs = [];
 			while (stack.length) {
 				var current = stack.pop(),
 					children = current.childNodes;
 				if (current.__paperId != null)
 					delete nodes[current.__paperId];
+				if (current.__href) {
+					hrefs.push(current.__href);
+					current.__href = null;
+				}
 				for (var i = 0, l = children.length; i < l; i++)
 					stack.push(children[i]);
 				var refs = ['__fillDef', '__strokeDef', '__clipDef',
@@ -16499,6 +16534,8 @@ var SvgView = View.extend(new function() {
 			}
 			if (node.parentNode)
 				node.parentNode.removeChild(node);
+			for (var i = 0, l = hrefs.length; i < l; i++)
+				this._releaseSymbol(hrefs[i]);
 		},
 
 		_updateSelection: function() {
