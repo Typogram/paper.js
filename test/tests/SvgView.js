@@ -1778,6 +1778,71 @@ test('Symbols share one definition', function() {
     equals(defs.childNodes.length, 1, 'And the shared definition');
 });
 
+test('A symbol definition goes when its last placement does', function() {
+    // Definitions are shared, so one can only be released when the last
+    // placement using it is gone - which is what the reference counts beside
+    // them are for. Without them a document that creates and discards symbols,
+    // an editor with an undo stack say, grows without limit.
+    var scope = createSvgScope();
+    var definition = new scope.SymbolDefinition(
+            new scope.Path.Circle({ center: [0, 0], radius: 10,
+                fillColor: 'red' })),
+        first = new scope.SymbolItem(definition, [50, 50]),
+        second = new scope.SymbolItem(definition, [100, 50]);
+    scope.view.update();
+    var defs = defsNode(scope);
+    equals(defs.childNodes.length, 1, 'One definition for both placements');
+    // The layer, the two placements, and the definition's own item.
+    equals(nodeCount(scope), 4, 'Whose item holds a node like any other');
+
+    first.remove();
+    scope.view.update();
+    equals(defs.childNodes.length, 1,
+            'Removing one placement keeps the definition for the other');
+    equals(nodeCount(scope), 3, 'And only that placement\'s node goes');
+
+    second.remove();
+    scope.view.update();
+    equals(defs.childNodes.length, 0,
+            'Removing the last one releases the definition');
+    equals(nodeCount(scope), 1, 'Along with the nodes inside it');
+
+    // And it comes back if the same definition is placed again.
+    new scope.SymbolItem(definition, [50, 50]);
+    scope.view.update();
+    equals(defs.childNodes.length, 1, 'Placing it again defines it again');
+    equals(scope.view.element.querySelectorAll('use').length, 1,
+            'With a placement referencing it');
+});
+
+test('Releasing a symbol releases what it holds', function() {
+    // A definition's item is an item like any other: it can carry gradients
+    // and shadows of its own, and can itself place further symbols. Releasing
+    // it has to take all of that with it.
+    var scope = createSvgScope();
+    var inner = new scope.SymbolDefinition(
+            new scope.Path.Circle({ center: [0, 0], radius: 5,
+                fillColor: { gradient: { stops: ['red', 'blue'] },
+                    origin: [0, 0], destination: [5, 0] } })),
+        outer = new scope.SymbolDefinition(
+            new scope.Group([new scope.SymbolItem(inner, [0, 0])])),
+        item = new scope.SymbolItem(outer, [50, 50]);
+    scope.view.update();
+    var defs = defsNode(scope);
+    equals(defs.querySelectorAll('linearGradient').length, 1,
+            'The nested definition brought a gradient with it');
+    equals(scope.view.element.querySelectorAll('use').length, 2,
+            'And there are two placements, one nested in the other');
+
+    item.remove();
+    scope.view.update();
+    equals(defs.childNodes.length, 0,
+            'Releasing the outer definition releases the inner one too');
+    equals(defs.querySelectorAll('linearGradient').length, 0,
+            'And the gradient it held');
+    equals(nodeCount(scope), 1, 'Leaving nothing but the layer');
+});
+
 test('A symbol placement carries none of the definition\'s style', function() {
     // Writing the merged style of a <use> would override what the definition
     // itself paints with.
@@ -2053,25 +2118,6 @@ test('Serializing a project does not mention the renderer', function() {
 // ---------------------------------------------------------------------------
 
 QUnit.module('SvgView divergences', { teardown: svgViewTeardown });
-
-test('GAP 6: a symbol definition is never released', function() {
-    // Definitions are keyed by SymbolDefinition id and only ever added. A
-    // definition whose last placement is gone keeps its node, and the items
-    // inside it keep their entries in the view's node map.
-    var scope = createSvgScope();
-    var definition = new scope.SymbolDefinition(
-            new scope.Path.Circle({ center: [0, 0], radius: 10,
-                fillColor: 'red' })),
-        item = new scope.SymbolItem(definition, [50, 50]);
-    scope.view.update();
-    equals(defsNode(scope).childNodes.length, 1, 'The definition was created');
-    item.remove();
-    scope.view.update();
-    equals(scope.view.element.querySelectorAll('use').length, 0,
-            'The placement is gone');
-    equals(defsNode(scope).childNodes.length, 1,
-            'GAP: but the definition it used stays in the defs');
-});
 
 test('GAP 7: a singular matrix is written out rather than skipped', function() {
     // Item#draw() bails on a non-invertible global matrix. The renderer writes

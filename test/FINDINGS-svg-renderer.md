@@ -12,24 +12,25 @@ The suite is browser-only — it inspects the rendered DOM — and runs from
 
 | | before | after |
 | --- | --- | --- |
-| tests | 16 | 70 |
-| assertions | 109 | 543 |
+| tests | 16 | 73 |
+| assertions | 109 | 658 |
 
-`QUnit.module('SvgView')` — 62 tests, 454 assertions — covers renderer
+`QUnit.module('SvgView')` — 71 tests, 652 assertions — covers renderer
 selection and element takeover, the view API against `CanvasView`, text
 measurement parity, geometry for every item class, change tracking, the scene
-graph (insert / remove / reorder / nest / clip / clear), the full style
-surface, gradients, shadows, blend modes, text, rasters, symbols, the
+graph (insert / remove / reorder / reparent / nest / clip / clear), the full
+style surface, gradients, shadows, blend modes, text, rasters, symbols, the
 selection overlay, and interop (hit-testing, `rasterize()`, `importSVG` /
 `exportSVG`, JSON round-trips).
 
-`QUnit.module('SvgView divergences')` — 8 tests, 89 assertions — pins the
+`QUnit.module('SvgView divergences')` — 2 tests, 6 assertions — pins the
 behaviour that does *not* match the canvas renderer, so each gap below is
 executable rather than folklore. **A red test in that module means a gap was
 closed**, not that something broke: turn the assertion around and move the
-entry here into "fixed".
+entry from "Still open" into "Fixed so far". It started at 8 tests; six of
+them have since moved across into the main module as positive tests.
 
-Full suite after the change: 15687 of 15693 assertions pass. The 6 failures
+Full suite after the change: 15802 of 15808 assertions pass. The 6 failures
 are pre-existing, all in `Path Boolean Operations`, and unrelated to the
 renderer — the same 6 fail on this tree with these tests removed (measured
 before the change: 15253 of 15259).
@@ -163,20 +164,32 @@ Reusing the node keeps the cache.
 Covered by: the last assertion of *Rasters only re-encode when their pixels
 change*.
 
+### 6. Symbol definitions were never released
+
+`_updateSymbol()` keyed definitions by `SymbolDefinition._id` and only ever
+added to `this._symbols` and `this._defs`. When the last `SymbolItem` using a
+definition was removed, its `<g>` stayed in the defs and the items inside it
+kept their entries in `this._nodes`. Bounded by the number of distinct
+definitions rather than by placements, so it was a slow leak rather than a bad
+one — but a document that creates and discards symbols, an editor with an undo
+stack say, grew without limit.
+
+The view now keeps a reference count per definition beside `_symbols`.
+`_updateSymbol()` counts a placement when a node adopts an id and drops the one
+it replaces when a node changes definition; `_disposeNode()` collects the ids of
+the nodes it sweeps and releases them afterwards. At zero the definition's own
+nodes are disposed — so its `_nodes` entries, its gradients and its shadows go
+too — and the `<g>` is taken out of the defs.
+
+The releases are deferred until after `_disposeNode()`'s sweep rather than done
+inside it, because releasing a definition disposes its contents, which may hold
+placements of further symbols: that recursion must not re-enter the loop that is
+still walking.
+
+Covered by: *A symbol definition goes when its last placement does*,
+*Releasing a symbol releases what it holds*.
+
 ## Still open
-
-### 6. Symbol definitions are never released
-
-`_updateSymbol()` keys definitions by `SymbolDefinition._id` and only ever adds
-to `this._symbols` and `this._defs`. When the last `SymbolItem` using a
-definition is removed, its `<g>` stays in the defs and the items inside it keep
-their entries in `this._nodes`.
-
-Bounded by the number of distinct definitions rather than by placements, so it
-is a slow leak rather than a bad one — but a document that creates and discards
-symbols (an editor with an undo stack) grows without limit.
-
-Pinned by: *GAP 6: a symbol definition is never released*.
 
 ### 7. A singular matrix is written out rather than skipped
 

@@ -9,7 +9,7 @@
  *
  * All rights reserved.
  *
- * Date: Mon Sep 14 21:53:11 2026 -0400
+ * Date: Mon Sep 14 21:54:29 2026 -0400
  *
  ***
  *
@@ -15939,6 +15939,7 @@ var SvgView = View.extend(new function() {
 			this._nodes = {};
 			this._defs = SvgElement.create('defs');
 			this._symbols = {};
+			this._symbolRefs = {};
 			this._content = SvgElement.create('g', {
 				'pointer-events': 'none'
 			});
@@ -15969,6 +15970,7 @@ var SvgView = View.extend(new function() {
 			}
 			this._nodes = {};
 			this._symbols = {};
+			this._symbolRefs = {};
 			if (measureContext) {
 				CanvasProvider.release(measureContext);
 				this._measureContext = null;
@@ -16233,8 +16235,31 @@ var SvgView = View.extend(new function() {
 				this._defs.appendChild(def);
 			}
 			if (node.__href !== id) {
+				var previous = node.__href,
+					refs = this._symbolRefs;
 				node.__href = id;
+				refs[id] = (refs[id] || 0) + 1;
 				SvgElement.set(node, { href: '#' + id });
+				if (previous)
+					this._releaseSymbol(previous);
+			}
+		},
+
+		_releaseSymbol: function(id) {
+			var refs = this._symbolRefs,
+				count = (refs[id] || 0) - 1;
+			if (count > 0) {
+				refs[id] = count;
+				return;
+			}
+			delete refs[id];
+			var def = this._symbols[id];
+			if (def) {
+				delete this._symbols[id];
+				while (def.firstChild)
+					this._disposeNode(def.firstChild);
+				if (def.parentNode === this._defs)
+					this._defs.removeChild(def);
 			}
 		},
 
@@ -16486,12 +16511,17 @@ var SvgView = View.extend(new function() {
 		_disposeNode: function(node) {
 			var nodes = this._nodes,
 				defs = this._defs,
-				stack = [node];
+				stack = [node],
+				hrefs = [];
 			while (stack.length) {
 				var current = stack.pop(),
 					children = current.childNodes;
 				if (current.__paperId != null)
 					delete nodes[current.__paperId];
+				if (current.__href) {
+					hrefs.push(current.__href);
+					current.__href = null;
+				}
 				for (var i = 0, l = children.length; i < l; i++)
 					stack.push(children[i]);
 				var refs = ['__fillDef', '__strokeDef', '__clipDef',
@@ -16507,6 +16537,8 @@ var SvgView = View.extend(new function() {
 			}
 			if (node.parentNode)
 				node.parentNode.removeChild(node);
+			for (var i = 0, l = hrefs.length; i < l; i++)
+				this._releaseSymbol(hrefs[i]);
 		},
 
 		_updateSelection: function() {

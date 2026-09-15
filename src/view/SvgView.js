@@ -360,8 +360,11 @@ var SvgView = View.extend(new function() {
             this._nodes = {};
             // Definitions (gradients, clip-paths, symbols) referenced by nodes.
             this._defs = SvgElement.create('defs');
-            // Symbol definitions are shared by all items that use them.
+            // Symbol definitions are shared by all items that use them, so
+            // they are kept until the last placement using one is gone,
+            // which is what the reference counts beside them track.
             this._symbols = {};
+            this._symbolRefs = {};
             // All items are rendered into this group, which carries the view's
             // matrix. Panning and zooming only touch its transform attribute.
             // Pointer events are switched off on it so that events always
@@ -406,6 +409,7 @@ var SvgView = View.extend(new function() {
             }
             this._nodes = {};
             this._symbols = {};
+            this._symbolRefs = {};
             if (measureContext) {
                 CanvasProvider.release(measureContext);
                 this._measureContext = null;
@@ -761,8 +765,42 @@ var SvgView = View.extend(new function() {
                 this._defs.appendChild(def);
             }
             if (node.__href !== id) {
+                // Count this placement against the definition, and let go of
+                // the one it was using before, if it is changing definitions.
+                var previous = node.__href,
+                    refs = this._symbolRefs;
                 node.__href = id;
+                refs[id] = (refs[id] || 0) + 1;
                 SvgElement.set(node, { href: '#' + id });
+                if (previous)
+                    this._releaseSymbol(previous);
+            }
+        },
+
+        /**
+         * Drops one reference to a symbol definition, and takes the definition
+         * out of the defs once nothing uses it any more. Definitions are
+         * shared by every placement of the same SymbolDefinition, so one can
+         * only go when the last placement does.
+         */
+        _releaseSymbol: function(id) {
+            var refs = this._symbolRefs,
+                count = (refs[id] || 0) - 1;
+            if (count > 0) {
+                refs[id] = count;
+                return;
+            }
+            delete refs[id];
+            var def = this._symbols[id];
+            if (def) {
+                delete this._symbols[id];
+                // The definition's item has a node like any other item, with
+                // its own entry in #_nodes and its own definitions to release
+                // - and may hold placements of further symbols itself.
+                while (def.firstChild)
+                    this._disposeNode(def.firstChild);
+                if (def.parentNode === this._defs)
+                    this._defs.removeChild(def);
             }
         },
 
@@ -1104,12 +1142,21 @@ var SvgView = View.extend(new function() {
         _disposeNode: function(node) {
             var nodes = this._nodes,
                 defs = this._defs,
-                stack = [node];
+                stack = [node],
+                // The symbol definitions the disposed nodes were using.
+                // Collected here and released once the sweep is over, since
+                // releasing one disposes the definition's own nodes, which
+                // must not re-enter the loop below.
+                hrefs = [];
             while (stack.length) {
                 var current = stack.pop(),
                     children = current.childNodes;
                 if (current.__paperId != null)
                     delete nodes[current.__paperId];
+                if (current.__href) {
+                    hrefs.push(current.__href);
+                    current.__href = null;
+                }
                 for (var i = 0, l = children.length; i < l; i++)
                     stack.push(children[i]);
                 var refs = ['__fillDef', '__strokeDef', '__clipDef',
@@ -1125,6 +1172,8 @@ var SvgView = View.extend(new function() {
             }
             if (node.parentNode)
                 node.parentNode.removeChild(node);
+            for (var i = 0, l = hrefs.length; i < l; i++)
+                this._releaseSymbol(hrefs[i]);
         },
 
         /**
