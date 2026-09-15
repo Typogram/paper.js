@@ -36,24 +36,40 @@ before the change: 15253 of 15259).
 
 ## Divergences from the canvas renderer
 
-Ordered by how likely they are to be noticed in a real document.
+Ordered by how likely they are to be noticed in a real document. The numbers
+are stable ids, not a sequence — an entry keeps its number when it moves to
+**Fixed**, so the `GAP n` test names stay meaningful across commits.
 
-### 1. A clip mask is clipped by the wrong winding rule
+## Fixed so far
+
+### 1. A clip mask was clipped by the wrong winding rule
 
 `Item#draw()` passes the fill rule to the canvas explicitly —
 `ctx.clip(this.getFillRule())` in [src/item/Item.js:4520](src/item/Item.js#L4520),
 added upstream for exactly this case (paperjs/paper.js#1361). The SVG renderer
-writes `fill-rule` in `_updateStyle()` and nothing else, but inside a
-`<clipPath>` SVG reads **`clip-rule`**; `fill-rule` has no effect there.
+wrote `fill-rule` and nothing else, but inside a `<clipPath>` SVG reads
+**`clip-rule`**; `fill-rule` has no effect there. An even-odd clip mask — a
+compound path with a hole, which is the usual way to punch one — clipped as
+non-zero and the hole disappeared.
 
-So an even-odd clip mask — a compound path with a hole, which is the usual way
-to punch one — clips as non-zero under the SVG renderer and the hole
-disappears. Visible difference, silent.
+`_updateStyle()` now writes `clip-rule` alongside `fill-rule`, under the same
+non-default-only guard. It is written there rather than in `_setClip()` so that
+it stays current when the rule changes afterwards: that is a `Change.STYLE`,
+which reaches `_updateStyle()` but never `_setClip()`. The attribute is inert
+on nodes that are not inside a `<clipPath>`.
 
-Fix: write `clip-rule` alongside `fill-rule`, or write it on the node when
-`_setClip()` adopts it.
+A *group* used as a clip item still gets nothing of its own, because
+`_updateStyle()` returns early for groups — but its children are ordinary items
+that each get their own `clip-rule`, and `clip-rule` inherits, so the clip
+resolves correctly regardless.
 
-Pinned by: *GAP 1: a clip item is clipped by fill-rule, not clip-rule*.
+Verified at the pixel level as well as by attribute: serialized to a data URL
+and drawn onto a canvas, the centre of the donut is transparent with the
+attribute and opaque red without it.
+
+Covered by: *A clip item is clipped by the rule it asks for*.
+
+## Still open
 
 ### 2. With two clip masks, the last one wins instead of the first
 
@@ -186,7 +202,7 @@ Confirmed by the tests, listed here so the picture is complete:
   paper.js tests needs the same pin, or those tests will quietly start running
   against a renderer they were not written for.
 
-## Fixed while writing these tests
+## A leak in the tests themselves, also fixed
 
 **The SvgView tests leaked their active scope.** Item constructors insert into
 whichever `PaperScope` is active, and these tests open scopes of their own and

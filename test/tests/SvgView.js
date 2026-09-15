@@ -911,6 +911,39 @@ test('A clip item is kept up to date inside its clipPath', function() {
             'And the reference to it');
 });
 
+test('A clip item is clipped by the rule it asks for', function() {
+    // SVG resolves a <clipPath> child's winding with clip-rule; fill-rule has
+    // no effect there. So an even-odd clip mask - a compound path with a hole,
+    // the usual way to punch one - needs clip-rule, or the hole is lost. The
+    // canvas renderer passes the same value to ctx.clip(), see Item#draw().
+    var scope = createSvgScope();
+    var clip = new scope.CompoundPath({
+            children: [
+                new scope.Path.Circle({ center: [50, 50], radius: 30 }),
+                new scope.Path.Circle({ center: [50, 50], radius: 10 })
+            ],
+            fillRule: 'evenodd'
+        }),
+        group = new scope.Group([
+            clip,
+            new scope.Path.Rectangle({ point: [0, 0], size: [100, 100],
+                fillColor: 'red' })
+        ]);
+    group.clipped = true;
+    scope.view.update();
+    var node = scope.view.element.querySelector('clipPath').firstChild;
+    equals(node.getAttribute('fill-rule'), 'evenodd', 'fill-rule is written');
+    equals(node.getAttribute('clip-rule'), 'evenodd',
+            'And clip-rule, which is the one that decides the clip');
+    // It is a style property, so it has to stay current afterwards - which is
+    // why it is written where fill-rule is, not where the clip is set up.
+    clip.fillRule = 'nonzero';
+    scope.view.update();
+    equals(node.getAttribute('clip-rule'), null,
+            'Changing the rule afterwards rewrites it');
+    equals(node.getAttribute('fill-rule'), null, 'Along with fill-rule');
+});
+
 test('Removing a view leaves nothing behind', function() {
     var scope = createSvgScope();
     new scope.Path.Circle({ center: [50, 50], radius: 20,
@@ -1823,35 +1856,6 @@ test('Serializing a project does not mention the renderer', function() {
 // ---------------------------------------------------------------------------
 
 QUnit.module('SvgView divergences', { teardown: svgViewTeardown });
-
-test('GAP 1: a clip item is clipped by fill-rule, not clip-rule', function() {
-    // SVG resolves a <clipPath> child's winding with the clip-rule property;
-    // fill-rule has no effect there. The renderer writes only fill-rule, so an
-    // even-odd clip mask - a compound path with a hole, the usual way to punch
-    // one - clips as non-zero, and the hole disappears. The canvas renderer
-    // passes the fill rule to ctx.clip() and keeps it.
-    var scope = createSvgScope();
-    var clip = new scope.CompoundPath({
-            children: [
-                new scope.Path.Circle({ center: [50, 50], radius: 30 }),
-                new scope.Path.Circle({ center: [50, 50], radius: 10 })
-            ],
-            fillRule: 'evenodd'
-        }),
-        group = new scope.Group([
-            clip,
-            new scope.Path.Rectangle({ point: [0, 0], size: [100, 100],
-                fillColor: 'red' })
-        ]);
-    group.clipped = true;
-    scope.view.update();
-    var node = scope.view.element.querySelector('clipPath').firstChild;
-    equals(clip.fillRule, 'evenodd', 'The item asks for even-odd');
-    equals(node.getAttribute('fill-rule'), 'evenodd',
-            'Which is written as fill-rule');
-    equals(node.getAttribute('clip-rule'), null,
-            'GAP: but clip-rule, the one SVG reads inside a clipPath, is not');
-});
 
 test('GAP 2: the last clipMask child wins, not the first', function() {
     // Group#_getClipItem() takes the FIRST child with _clipMask set and draws

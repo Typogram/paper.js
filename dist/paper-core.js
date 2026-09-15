@@ -16254,8 +16254,9 @@ var SvgView = View.extend(new function() {
 				fillRule = style.getFillRule();
 			this._setPaint(item, node, 'fill', fillColor);
 			this._setPaint(item, node, 'stroke', strokeColor);
-			setAttr(node, 'fill-rule',
-					fillRule && fillRule !== 'nonzero' ? fillRule : null);
+			var rule = fillRule && fillRule !== 'nonzero' ? fillRule : null;
+			setAttr(node, 'fill-rule', rule);
+			setAttr(node, 'clip-rule', rule);
 			setAttr(node, 'stroke-width',
 					strokeColor && strokeWidth !== 1 ? num(strokeWidth) : null);
 			setAttr(node, 'stroke-linecap',

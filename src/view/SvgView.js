@@ -781,8 +781,18 @@ var SvgView = View.extend(new function() {
                 fillRule = style.getFillRule();
             this._setPaint(item, node, 'fill', fillColor);
             this._setPaint(item, node, 'stroke', strokeColor);
-            setAttr(node, 'fill-rule',
-                    fillRule && fillRule !== 'nonzero' ? fillRule : null);
+            var rule = fillRule && fillRule !== 'nonzero' ? fillRule : null;
+            setAttr(node, 'fill-rule', rule);
+            // Inside a <clipPath>, SVG resolves the winding with clip-rule;
+            // fill-rule has no effect there, so a clip item that asks for
+            // even-odd - a compound path with a hole, the usual way to punch
+            // one - would clip as non-zero and lose the hole. The canvas
+            // renderer passes the same value to ctx.clip(), see Item#draw().
+            // Written here rather than where the clip is set up, so that it
+            // stays current when the rule changes later: that is a style
+            // change, and style changes do not reach #_setClip(). It is inert
+            // on a node that is not inside a <clipPath>.
+            setAttr(node, 'clip-rule', rule);
             // Written even without a stroke, so that clearing the stroke color
             // does not leave a stale width or dash pattern behind.
             setAttr(node, 'stroke-width',
