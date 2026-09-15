@@ -12,16 +12,17 @@ The suite is browser-only — it inspects the rendered DOM — and runs from
 
 | | before | after |
 | --- | --- | --- |
-| tests | 16 | 73 |
-| assertions | 109 | 658 |
+| tests | 16 | 83 |
+| assertions | 109 | 781 |
 
-`QUnit.module('SvgView')` — 71 tests, 652 assertions — covers renderer
+`QUnit.module('SvgView')` — 81 tests, 775 assertions — covers renderer
 selection and element takeover, the view API against `CanvasView`, text
 measurement parity, geometry for every item class, change tracking, the scene
 graph (insert / remove / reorder / reparent / nest / clip / clear), the full
 style surface, gradients, shadows, blend modes, text, rasters, symbols, the
 selection overlay, and interop (hit-testing, `rasterize()`, `importSVG` /
-`exportSVG`, JSON round-trips).
+`exportSVG`, JSON round-trips), pixel comparison against the canvas
+renderer, and mouse interaction.
 
 `QUnit.module('SvgView divergences')` — 2 tests, 6 assertions — pins the
 behaviour that does *not* match the canvas renderer, so each gap below is
@@ -30,10 +31,66 @@ closed**, not that something broke: turn the assertion around and move the
 entry from "Still open" into "Fixed so far". It started at 8 tests; six of
 them have since moved across into the main module as positive tests.
 
-Full suite after the change: 15802 of 15808 assertions pass. The 6 failures
+Full suite after the change: 15925 of 15931 assertions pass. The 6 failures
 are pre-existing, all in `Path Boolean Operations`, and unrelated to the
 renderer — the same 6 fail on this tree with these tests removed (measured
 before the change: 15253 of 15259).
+
+## The pixel comparison harness
+
+`compareRenderers()` builds the same scene with both renderers and compares
+what each one paints. The canvas side reads its context back directly; the SVG
+side is serialized to a data URL, loaded into an `<img>` and drawn onto a
+canvas, so what is compared is the browser's own SVG rasterization — what a
+user would actually see. The comparison itself reuses the suite's existing
+`compareImageData()`, which is resemble.js.
+
+This is the only thing in the suite that can see a rendering divergence at all.
+Every other test asserts attributes, and an attribute can read perfectly while
+the wrong thing is painted: that is exactly how #1 and #3 got in. The suite's
+own `comparePixels()` cannot stand in for it, because it goes through
+`Item#rasterize()`, which uses a canvas whichever renderer is in use.
+
+It turns out to be far less approximate than expected. Of the scenes covered —
+fills, dashes, caps and joins, transformed shapes, translucency, group opacity,
+blend modes, linear and radial gradients, text, symbols, four clipping cases,
+rasters and reparenting — **every one is pixel-identical**, so they run at
+`compareImageData()`'s default tolerance of 0.01%. Only the drop shadow needs a
+looser bound (2%), because canvas blurs it itself while SVG hands
+`feDropShadow` a standard deviation of half the `shadowBlur`; the two agree
+closely but not to the last bit.
+
+And it discriminates. Re-breaking each fix on the rendered output, against that
+0.01% tolerance:
+
+| scene | as fixed | with the fix undone |
+| --- | --- | --- |
+| even-odd clip mask | 0% | **7.32%** |
+| raster smoothing | 0% | **48.36%** |
+
+Two caveats worth carrying. It assumes the browser rasterizes SVG and canvas
+the same way, which holds in Chrome here but may drift in other engines — so
+the tolerance is small rather than zero. And a raster with a cross-origin `src`
+will not load inside a data-URL document, so those scenes need canvas-backed
+rasters.
+
+## Interaction
+
+`test/tests/Interactions.js` drives real events against a `CanvasView`. The SVG
+renderer replaces the element the application handed over and switches pointer
+events off on the groups it renders into, so event delivery is a path of its
+own — and the one an editor leans on entirely. It was previously covered only
+indirectly, by asserting `pointer-events` attributes.
+
+Five tests now dispatch real `MouseEvent`s at an `<svg>` that is really in the
+document: item mouse events, stacking and hit exclusion, dragging, tools, and
+`View#onMouseDown()` with an item covering the whole view. All of it works — it
+was a coverage gap, not a bug.
+
+Note for anyone adding to them: a press has to be released before the next one.
+`View` ignores a `mousedown` while it still believes the button is down, see
+`dragging` in `View.js`, so repeated presses without a `mouseup` between are
+silently swallowed.
 
 ## Divergences from the canvas renderer
 
@@ -258,16 +315,6 @@ one the harness set the test up in. Measured with temporary instrumentation in
 
 Where the coverage stops, so the next person does not have to rediscover it:
 
-- **Pixel parity.** Nothing renders both renderers and compares the result.
-  The suite's `comparePixels()` helper goes through `Item#rasterize()`, which
-  uses a canvas in both cases, so it cannot see an SVG-side difference — #1 and
-  #3 above are exactly the kind of bug only an image diff would catch.
-  Serializing the `<svg>` into an `<img>` and drawing that onto a canvas would
-  work, at the cost of an async, timing-sensitive test.
-- **Tools and mouse events.** `test/tests/Interactions.js` drives real events
-  against a `CanvasView`. The tests here check that the content and overlay
-  groups are `pointer-events: none` and that `hitTest()` agrees, which is the
-  mechanism — but no tool event is actually delivered through an `<svg>`.
 - **The `resize` attribute and `View#onResize`.**
 - **`View#autoUpdate` and the requestAnimationFrame loop**, including
   `onFrame`. Every test here calls `update()` by hand.

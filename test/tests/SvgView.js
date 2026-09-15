@@ -20,8 +20,9 @@
  * file, and written up in test/FINDINGS-svg-renderer.md.
  */
 // Every scope createScope() opened during the current test, so that the
-// teardown can close them again.
-var svgViewScopes = [];
+// teardown can close them again, and every element it put in the document.
+var svgViewScopes = [],
+    svgViewHosts = [];
 
 // Item constructors insert into whichever scope is active, and these tests
 // open scopes of their own and activate them - so the scope the shared test
@@ -36,6 +37,12 @@ var svgViewTeardown = function() {
             projects[j].remove();
     }
     svgViewScopes = [];
+    for (var i = 0; i < svgViewHosts.length; i++) {
+        var host = svgViewHosts[i];
+        if (host.parentNode)
+            host.parentNode.removeChild(host);
+    }
+    svgViewHosts = [];
     if (currentProject && currentProject._scope)
         currentProject._scope.activate();
 };
@@ -127,6 +134,158 @@ function countWrites(node, fn) {
         node.setAttribute = setAttribute;
     }
     return writes;
+}
+
+/**
+ * A view whose `<svg>` is really in the document, at a known position.
+ *
+ * Event coordinates are measured against the element's bounding rectangle, so
+ * pinning it to the top left corner makes a view coordinate and a client
+ * coordinate the same number - and keeps it clear of the QUnit output, which
+ * would otherwise push it down the page.
+ */
+function createInsertedSvgScope(size) {
+    size = size || 100;
+    var host = document.createElement('div');
+    host.style.cssText = 'position:fixed;left:0;top:0;margin:0;padding:0;'
+            + 'border:0;width:' + size + 'px;height:' + size + 'px';
+    var element = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    element.setAttribute('width', size);
+    element.setAttribute('height', size);
+    host.appendChild(element);
+    document.body.appendChild(host);
+    svgViewHosts.push(host);
+    var scope = newScope();
+    scope.settings.renderer = 'svg';
+    scope.setup(element);
+    scope.activate();
+    return scope;
+}
+
+/**
+ * What triggerMouseEvent() in helpers.js does, but against a given view rather
+ * than the harness's own. Which element to dispatch on is not a choice: View
+ * binds mousedown to its element and the rest to the document, see `viewEvents`
+ * and `docEvents` in View.js.
+ */
+function triggerMouseEventOn(scope, type, x, y) {
+    var target = type === 'mousedown' ? scope.view.element : document,
+        Constructor = typeof nativeClasses.MouseEvent === 'function'
+            ? nativeClasses.MouseEvent
+            : MouseEventPolyfill;
+    target.dispatchEvent(new Constructor(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX: x,
+        clientY: y,
+        screenX: x,
+        screenY: y
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Comparing what the two renderers actually paint
+//
+// Every other test in this file asserts attributes, which cannot see a
+// rendering divergence: a clip mask resolved with the wrong winding rule
+// paints the wrong thing while every attribute reads correctly, and that is
+// exactly how the clip-rule and smoothing bugs got in. These build the same
+// scene in both renderers and compare pixels.
+//
+// The suite's own comparePixels() cannot do this - it goes through
+// Item#rasterize(), which uses a canvas whichever renderer is in use, so it is
+// blind to the SVG side by construction.
+// ---------------------------------------------------------------------------
+
+// The size both renderers paint into. Small keeps the image comparison quick;
+// it is the divergences that matter here, not fine detail.
+var COMPARE_SIZE = 100;
+
+/**
+ * Renders a scene with the canvas renderer and reads its pixels back.
+ *
+ * The canvas is given hidpi="off" so the backing store stays 1:1 with the view.
+ * Without it CanvasView scales by devicePixelRatio, and on a retina screen the
+ * pixels read back would be the top-left quarter of the scene.
+ */
+function renderWithCanvas(build) {
+    var element = document.createElement('canvas');
+    element.width = element.height = COMPARE_SIZE;
+    element.setAttribute('hidpi', 'off');
+    var scope = newScope();
+    scope.settings.renderer = 'canvas';
+    scope.setup(element);
+    scope.activate();
+    build(scope);
+    scope.view.update();
+    equals(scope.view.pixelRatio, 1, 'The comparison canvas is not scaled');
+    return element.getContext('2d')
+            .getImageData(0, 0, COMPARE_SIZE, COMPARE_SIZE);
+}
+
+/**
+ * Renders a scene with the SVG renderer and reads back what the browser
+ * actually paints for it, by handing the serialized `<svg>` to an `<img>` and
+ * drawing that onto a canvas. It is the browser's own SVG rasterizer, so what
+ * comes back is what a user would see.
+ *
+ * Asynchronous, because an image has to load - hence the callback.
+ */
+function renderWithSvg(build, callback) {
+    var scope = createScope('svg', new paper.Size(COMPARE_SIZE, COMPARE_SIZE));
+    build(scope);
+    scope.view.update();
+    // Serialize a copy, so the live view is left exactly as it was. The xmlns
+    // is what makes the markup stand alone as a document.
+    var element = scope.view.element.cloneNode(true);
+    element.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    // Percent-encoded rather than base64: btoa() cannot take the non-Latin-1
+    // characters a text item may well hold.
+    var url = 'data:image/svg+xml;charset=utf-8,'
+            + encodeURIComponent(new XMLSerializer().serializeToString(element)),
+        image = new Image();
+    image.onload = function() {
+        var canvas = document.createElement('canvas');
+        canvas.width = canvas.height = COMPARE_SIZE;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(image, 0, 0);
+        callback(ctx.getImageData(0, 0, COMPARE_SIZE, COMPARE_SIZE));
+    };
+    image.onerror = function() {
+        equals(false, true, 'The rendered SVG failed to load as an image');
+        callback(null);
+    };
+    image.src = url;
+}
+
+/**
+ * Paints each of `scenes` with both renderers and compares the results.
+ *
+ * `scenes` maps a name to a function that builds the scene in the scope it is
+ * given. `tolerance` is the fraction of pixels allowed to differ, and defaults
+ * to what compareImageData() uses.
+ */
+function compareRenderers(assert, scenes, tolerance) {
+    var done = assert.async(),
+        names = [];
+    for (var name in scenes)
+        names.push(name);
+    function next(index) {
+        if (index >= names.length)
+            return done();
+        var name = names[index],
+            build = scenes[name],
+            expected = renderWithCanvas(build);
+        renderWithSvg(build, function(actual) {
+            if (actual) {
+                compareImageData(actual, expected, tolerance,
+                        name + ' paints the same in both renderers');
+            }
+            next(index + 1);
+        });
+    }
+    next(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2105,6 +2264,358 @@ test('Serializing a project does not mention the renderer', function() {
     other.project.importJSON(json);
     equals(other.project.activeLayer.children.length, 1,
             'So a project moves between renderers unchanged');
+});
+
+// ---------------------------------------------------------------------------
+// Interaction
+//
+// test/tests/Interactions.js drives real events against a CanvasView. The SVG
+// renderer replaces the element the application handed over, and switches
+// pointer events off on the groups it renders into, so event delivery is a
+// path of its own - and one an editor leans on entirely.
+// ---------------------------------------------------------------------------
+
+test('Mouse events reach items through the <svg>', function(assert) {
+    var done = assert.async();
+    var scope = createInsertedSvgScope();
+    var item = new scope.Path.Rectangle({ point: [0, 0], size: [40, 40],
+        fillColor: 'red' });
+    scope.view.update();
+    var seen = [];
+    item.onMouseDown = function(event) {
+        seen.push('down');
+        equals(event.type, 'mousedown', 'The event type comes through');
+        equals(event.point.toString(), new paper.Point(10, 10).toString(),
+                'In view coordinates, measured off the <svg>');
+        equals(event.target, item, 'And targeted at the item that was hit');
+    };
+    item.onMouseUp = function() { seen.push('up'); };
+    item.onClick = function() { seen.push('click'); };
+    triggerMouseEventOn(scope, 'mousedown', 10, 10);
+    triggerMouseEventOn(scope, 'mouseup', 10, 10);
+    equals(seen.join(','), 'down,up,click',
+            'Down, up and click all arrive, in order');
+    done();
+});
+
+test('Only the item under the pointer is hit', function(assert) {
+    var done = assert.async();
+    var scope = createInsertedSvgScope();
+    var under = new scope.Path.Rectangle({ point: [0, 0], size: [50, 50],
+            fillColor: 'red' }),
+        over = new scope.Path.Rectangle({ point: [20, 20], size: [50, 50],
+            fillColor: 'blue' }),
+        hit = [];
+    under.onMouseDown = function() { hit.push('under'); };
+    over.onMouseDown = function() { hit.push('over'); };
+    scope.view.update();
+
+    // A press has to be released before the next one: View ignores a mousedown
+    // while it still believes the button is down, see `dragging` in View.js.
+    function click(x, y) {
+        hit.length = 0;
+        triggerMouseEventOn(scope, 'mousedown', x, y);
+        triggerMouseEventOn(scope, 'mouseup', x, y);
+        return hit.join(',');
+    }
+
+    equals(click(30, 30), 'over', 'Where they overlap, the top item wins');
+    equals(click(5, 5), 'under', 'Elsewhere the one actually there is hit');
+    equals(click(90, 90), '', 'And empty space hits nothing');
+
+    // Hit-testing runs over the scene graph, not the DOM, so an item that is
+    // not painted is not hit either.
+    over.visible = false;
+    scope.view.update();
+    equals(click(30, 30), 'under', 'A hidden item takes no events');
+    done();
+});
+
+test('Dragging reports the points it passes through', function(assert) {
+    var done = assert.async();
+    var scope = createInsertedSvgScope();
+    var item = new scope.Path.Rectangle({ point: [0, 0], size: [60, 60],
+            fillColor: 'red' }),
+        drags = [];
+    item.onMouseDrag = function(event) {
+        drags.push(event.point.toString());
+    };
+    scope.view.update();
+    triggerMouseEventOn(scope, 'mousedown', 10, 10);
+    triggerMouseEventOn(scope, 'mousemove', 20, 20);
+    triggerMouseEventOn(scope, 'mousemove', 30, 25);
+    triggerMouseEventOn(scope, 'mouseup', 30, 25);
+    equals(drags.length, 2, 'One drag event per move while the button is down');
+    equals(drags[0], new paper.Point(20, 20).toString(), 'With the first point');
+    equals(drags[1], new paper.Point(30, 25).toString(), 'And the second');
+    drags.length = 0;
+    triggerMouseEventOn(scope, 'mousemove', 40, 40);
+    equals(drags.length, 0, 'And none once the button is up');
+    done();
+});
+
+test('A tool receives events from an SVG view', function(assert) {
+    var done = assert.async();
+    var scope = createInsertedSvgScope();
+    new scope.Path.Rectangle({ point: [0, 0], size: [40, 40],
+        fillColor: 'red' });
+    scope.view.update();
+    var tool = new scope.Tool(),
+        seen = [];
+    tool.onMouseDown = function(event) {
+        seen.push('down:' + event.point);
+    };
+    tool.onMouseUp = function() { seen.push('up'); };
+    tool.activate();
+    // A tool hears about the view, not about any item, so a point over empty
+    // space counts just the same.
+    triggerMouseEventOn(scope, 'mousedown', 80, 80);
+    triggerMouseEventOn(scope, 'mouseup', 80, 80);
+    equals(seen.join(','),
+            'down:' + new paper.Point(80, 80).toString() + ',up',
+            'The tool is driven by the SVG view like any other');
+    done();
+});
+
+test('The view itself receives mouse events', function(assert) {
+    var done = assert.async();
+    var scope = createInsertedSvgScope();
+    scope.view.update();
+    var seen = [];
+    scope.view.onMouseDown = function(event) {
+        seen.push(event.point.toString());
+    };
+    triggerMouseEventOn(scope, 'mousedown', 25, 35);
+    triggerMouseEventOn(scope, 'mouseup', 25, 35);
+    equals(seen.length, 1, 'View#onMouseDown() fires');
+    equals(seen[0], new paper.Point(25, 35).toString(),
+            'At the point the pointer was over');
+    // The content and overlay groups are pointer-events: none precisely so
+    // that the <svg> stays the element the event is seen on - which is the one
+    // View bound its handler to.
+    var item = new scope.Path.Rectangle({ point: [0, 0], size: [100, 100],
+        fillColor: 'red' });
+    scope.view.update();
+    seen.length = 0;
+    triggerMouseEventOn(scope, 'mousedown', 25, 35);
+    triggerMouseEventOn(scope, 'mouseup', 25, 35);
+    equals(seen.length, 1,
+            'And still fires with an item covering the whole view');
+    equals(item.bounds.width, 100, 'Which really is covering it');
+    done();
+});
+
+// ---------------------------------------------------------------------------
+// Pixel comparison
+// ---------------------------------------------------------------------------
+
+test('Geometry and style paint the same in both renderers', function(assert) {
+    compareRenderers(assert, {
+        'A filled path': function(scope) {
+            new scope.Path.Circle({ center: [50, 50], radius: 30,
+                fillColor: 'red' });
+        },
+        'A dashed stroke': function(scope) {
+            new scope.Path.Rectangle({ point: [20, 20], size: [60, 60],
+                strokeColor: 'black', strokeWidth: 5, dashArray: [6, 3] });
+        },
+        'Caps and joins': function(scope) {
+            new scope.Path({
+                segments: [[15, 80], [50, 20], [85, 80]],
+                strokeColor: 'black', strokeWidth: 12,
+                strokeCap: 'round', strokeJoin: 'round'
+            });
+        },
+        'A transformed shape': function(scope) {
+            var shape = new scope.Shape.Rectangle({ point: [30, 40],
+                size: [40, 20], fillColor: 'blue' });
+            shape.rotate(25);
+            shape.scale(1.4, 0.8);
+        },
+        'A translucent fill over another': function(scope) {
+            new scope.Path.Circle({ center: [40, 50], radius: 25,
+                fillColor: 'red' });
+            new scope.Path.Circle({ center: [60, 50], radius: 25,
+                fillColor: new scope.Color(0, 0, 1, 0.5) });
+        },
+        'A group with opacity': function(scope) {
+            new scope.Group([
+                new scope.Path.Circle({ center: [40, 50], radius: 25,
+                    fillColor: 'red' }),
+                new scope.Path.Circle({ center: [60, 50], radius: 25,
+                    fillColor: 'blue' })
+            ]).opacity = 0.5;
+        },
+        'A multiply blend': function(scope) {
+            new scope.Path.Circle({ center: [40, 50], radius: 25,
+                fillColor: 'red' });
+            new scope.Path.Circle({ center: [60, 50], radius: 25,
+                fillColor: 'blue', blendMode: 'multiply' });
+        },
+        'A linear gradient': function(scope) {
+            new scope.Path.Rectangle({ point: [10, 10], size: [80, 80],
+                fillColor: {
+                    gradient: { stops: ['yellow', 'red'] },
+                    origin: [10, 10], destination: [90, 90]
+                } });
+        },
+        'A radial gradient with a highlight': function(scope) {
+            new scope.Path.Circle({ center: [50, 50], radius: 40,
+                fillColor: {
+                    gradient: { stops: ['white', 'blue'], radial: true },
+                    origin: [50, 50], destination: [90, 50],
+                    highlight: [40, 40]
+                } });
+        },
+        'Text': function(scope) {
+            new scope.PointText({ point: [8, 45], content: 'Hamburg',
+                fillColor: 'black', fontSize: 20 });
+        },
+        'A symbol placed twice': function(scope) {
+            var definition = new scope.SymbolDefinition(
+                new scope.Path.Star({ center: [0, 0], points: 5,
+                    radius1: 10, radius2: 20, fillColor: 'purple' }));
+            new scope.SymbolItem(definition, [30, 50]);
+            new scope.SymbolItem(definition, [70, 50]);
+        }
+    });
+});
+
+test('Clipping paints the same in both renderers', function(assert) {
+    // The scenes that would have caught the two clipping bugs: the first
+    // needs clip-rule to keep its hole, and the second is clipped by its first
+    // clip mask with the second drawn as an ordinary child.
+    compareRenderers(assert, {
+        'An even-odd clip mask keeps its hole': function(scope) {
+            var clip = new scope.CompoundPath({
+                    children: [
+                        new scope.Path.Circle({ center: [50, 50], radius: 35 }),
+                        new scope.Path.Circle({ center: [50, 50], radius: 15 })
+                    ],
+                    fillRule: 'evenodd'
+                });
+            new scope.Group([
+                clip,
+                new scope.Path.Rectangle({ point: [0, 0], size: [100, 100],
+                    fillColor: 'red' })
+            ]).clipped = true;
+        },
+        'The first of two clip masks clips': function(scope) {
+            var first = new scope.Path.Circle({ center: [40, 40],
+                    radius: 30 }),
+                second = new scope.Path.Rectangle({ point: [0, 0],
+                    size: [20, 20], fillColor: 'green' }),
+                painted = new scope.Path.Rectangle({ point: [0, 0],
+                    size: [100, 100], fillColor: 'red' });
+            new scope.Group([first, second, painted]);
+            first.clipMask = true;
+            second.clipMask = true;
+        },
+        'A clip mask set after the fact': function(scope) {
+            var mask = new scope.Path.Circle({ center: [50, 50], radius: 30 }),
+                group = new scope.Group([
+                    mask,
+                    new scope.Path.Rectangle({ point: [0, 0], size: [100, 100],
+                        fillColor: 'red' })
+                ]);
+            // Rendered once as an ordinary child, then promoted - which used
+            // to dispose its node and leave the group clipped by nothing.
+            scope.view.update();
+            mask.clipMask = true;
+        },
+        'A clipped group inside a transformed one': function(scope) {
+            var inner = new scope.Group([
+                new scope.Path.Circle({ center: [50, 50], radius: 25 }),
+                new scope.Path.Rectangle({ point: [20, 20], size: [60, 60],
+                    fillColor: 'orange' })
+            ]);
+            inner.clipped = true;
+            var outer = new scope.Group([inner]);
+            outer.applyMatrix = false;
+            outer.rotate(20, [50, 50]);
+        }
+    });
+});
+
+test('Rasters paint the same in both renderers', function(assert) {
+    // Smoothing is only visible on a raster drawn larger than its pixels,
+    // which is the scene that would have caught it staying stale.
+    function checkerboard() {
+        var source = document.createElement('canvas');
+        source.width = source.height = 4;
+        var ctx = source.getContext('2d');
+        for (var y = 0; y < 4; y++) {
+            for (var x = 0; x < 4; x++) {
+                ctx.fillStyle = (x + y) % 2 ? '#000000' : '#ffffff';
+                ctx.fillRect(x, y, 1, 1);
+            }
+        }
+        return source;
+    }
+    compareRenderers(assert, {
+        'A raster with smoothing off': function(scope) {
+            var raster = new scope.Raster(checkerboard());
+            raster.smoothing = 'off';
+            raster.position = [50, 50];
+            raster.scale(20);
+        },
+        'A raster moved after it was drawn': function(scope) {
+            var raster = new scope.Raster(checkerboard());
+            raster.position = [20, 20];
+            raster.scale(10);
+            scope.view.update();
+            raster.position = [50, 50];
+        }
+    });
+});
+
+test('Reparenting repaints correctly in both renderers', function(assert) {
+    // The node reuse must not change what ends up on screen - in particular
+    // the stacking order of the owner the item lands in.
+    compareRenderers(assert, {
+        'An item moved between groups': function(scope) {
+            var from = new scope.Group(),
+                to = new scope.Group([
+                    new scope.Path.Rectangle({ point: [10, 10],
+                        size: [50, 50], fillColor: 'red' })
+                ]),
+                moved = new scope.Path.Circle({ center: [50, 50], radius: 25,
+                    fillColor: 'blue' });
+            from.addChild(moved);
+            scope.view.update();
+            to.addChild(moved);
+        },
+        'An item moved and reordered': function(scope) {
+            var from = new scope.Group(),
+                under = new scope.Path.Rectangle({ point: [10, 10],
+                    size: [60, 60], fillColor: 'red' }),
+                over = new scope.Path.Rectangle({ point: [40, 40],
+                    size: [50, 50], fillColor: 'green' }),
+                to = new scope.Group([under, over]),
+                moved = new scope.Path.Circle({ center: [50, 50], radius: 30,
+                    fillColor: 'blue' });
+            from.addChild(moved);
+            scope.view.update();
+            // Between the two, so the move has to land at an index rather
+            // than simply at the end.
+            to.insertChild(1, moved);
+        }
+    });
+});
+
+test('A drop shadow paints almost the same in both renderers',
+function(assert) {
+    // Canvas blurs a shadow itself; SVG hands feDropShadow a standard
+    // deviation of half the shadowBlur. The two agree closely but not to the
+    // last bit, so this one gets a looser bound than the rest.
+    compareRenderers(assert, {
+        'A drop shadow': function(scope) {
+            new scope.Path.Circle({ center: [45, 45], radius: 25,
+                fillColor: 'red',
+                shadowColor: new scope.Color(0, 0, 0, 0.6),
+                shadowBlur: 10, shadowOffset: [5, 5] });
+        }
+    }, 0.02);
 });
 
 // ---------------------------------------------------------------------------
