@@ -9,7 +9,7 @@
  *
  * All rights reserved.
  *
- * Date: Mon Sep 14 18:01:56 2026 -0400
+ * Date: Mon Sep 14 21:49:32 2026 -0400
  *
  ***
  *
@@ -16416,7 +16416,7 @@ var SvgView = View.extend(new function() {
 				nodes = this._nodes,
 				childNodes = node.childNodes,
 				index = 0,
-				clipItem = null;
+				clipItem = owner._getClipItem ? owner._getClipItem() : null;
 			for (var i = 0, l = children.length; i < l; i++) {
 				var child = children[i],
 					childNode = nodes[child._id];
@@ -16431,8 +16431,7 @@ var SvgView = View.extend(new function() {
 					if (child instanceof Group)
 						this._syncChildren(child, childNode, true);
 				}
-				if (child._clipMask) {
-					clipItem = child;
+				if (child === clipItem) {
 					continue;
 				}
 				var current = childNodes[index];
@@ -16440,9 +16439,9 @@ var SvgView = View.extend(new function() {
 					node.insertBefore(childNode, current || null);
 				index++;
 			}
+			this._setClip(owner, node, clipItem);
 			while (childNodes.length > index)
 				this._disposeNode(childNodes[index]);
-			this._setClip(owner, node, clipItem);
 		},
 
 		_setClip: function(owner, node, clipItem) {

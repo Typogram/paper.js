@@ -69,27 +69,50 @@ attribute and opaque red without it.
 
 Covered by: *A clip item is clipped by the rule it asks for*.
 
-## Still open
-
-### 2. With two clip masks, the last one wins instead of the first
+### 2. With two clip masks, the last one won instead of the first
 
 `Group#_getClipItem()` ([src/item/Group.js:109](src/item/Group.js#L109)) takes
 the **first** child with `_clipMask` and stops; `Group#_draw()` then draws every
 other child normally, the second clip mask included.
 
-`SvgView#_syncChildren()` loops over all children and assigns
-`clipItem = child` each time one is a clip mask, so the **last** one wins — and
-because every clip-mask child hits `continue`, none of them are added to the
-sibling list, so the others are not drawn at all.
+`_syncChildren()` derived the clip item again for itself, assigning
+`clipItem = child` on every clip-mask child so the **last** one won — and
+because each of them hit `continue`, none of the others were drawn at all.
 
-Two clip masks in one group is unusual but reachable (`child.clipMask = true`
-on a second child, or importing SVG that has been edited by hand). The result
-differs in both which mask is applied and what is painted.
+It now calls `owner._getClipItem()` instead of deciding again, so there is one
+answer to the question rather than two. The cache behind it is already
+invalidated correctly: `Item#setClipMask()` notifies the parent with
+`ChangeFlag.CLIPPING`, `Group#_changed()` clears `_clipItem` on
+`CHILDREN | CLIPPING`, and `CLIPPING` is in the renderer's own `childrenFlags`,
+so it is current by the time the owner is synchronized.
 
-Fix: break at the first `_clipMask` child, and treat the rest as ordinary
-children.
+A `Project` has no `_getClipItem`, so this also drops clipping at the project
+level — which the canvas renderer does not do either (`Project#draw()` just
+draws its children), and which previously emitted a `clipPath` keyed
+`id="…-clip-undefined"`, since a project has no `_id`.
 
-Pinned by: *GAP 2: the last clipMask child wins, not the first*.
+Covered by: *With two clip masks, the first one clips and the rest are drawn*,
+*A project is not clipped by a layer*.
+
+### 2b. Promoting an existing child to clip mask threw its node away
+
+Found while testing #2, and older than it — the same fault is in the original
+code. The clip item is skipped in the walk that positions the siblings, so it
+ends up trailing them; the sweep that follows treats anything past the last
+child as removed and disposes it. A child that was already rendered and then
+had `clipMask` set therefore lost its node, and `_setClip()` — running after
+the sweep — found nothing to put in the `clipPath`. The group ended up clipped
+by an empty path, which hides everything in it.
+
+It only stayed hidden because the usual way in is `group.clipped = true` at
+construction, where the child has no sibling node position yet.
+
+`_setClip()` now runs *before* the sweep, so the clip node is moved into its
+definition while it is still alive.
+
+Covered by: *Promoting an existing child to clip mask keeps its node*.
+
+## Still open
 
 ### 3. `Raster#smoothing` does not take effect until something else changes
 

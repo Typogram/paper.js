@@ -991,7 +991,16 @@ var SvgView = View.extend(new function() {
                 // turn up elsewhere are moved here, which handles reordering
                 // as well as items that moved in from another parent.
                 index = 0,
-                clipItem = null;
+                // Which child clips is Group#_getClipItem()'s decision, not
+                // one to make again here: it takes the first child with
+                // _clipMask and leaves every other one to be drawn normally,
+                // which is what the canvas renderer paints. Its cached answer
+                // is cleared on CHILDREN and CLIPPING changes, both of which
+                // are in childrenFlags, so it is current by the time the owner
+                // is synchronized. A project has no clip item - neither does
+                // it in the canvas renderer, where Project#draw() just draws
+                // its children.
+                clipItem = owner._getClipItem ? owner._getClipItem() : null;
             for (var i = 0, l = children.length; i < l; i++) {
                 var child = children[i],
                     childNode = nodes[child._id];
@@ -1006,11 +1015,10 @@ var SvgView = View.extend(new function() {
                     if (child instanceof Group)
                         this._syncChildren(child, childNode, true);
                 }
-                if (child._clipMask) {
-                    // Clipping children live inside a clipPath in the defs,
-                    // not among their siblings, but are otherwise kept up to
+                if (child === clipItem) {
+                    // The clipping child lives inside a clipPath in the defs,
+                    // not among its siblings, but is otherwise kept up to
                     // date like any other item.
-                    clipItem = child;
                     continue;
                 }
                 // Read the current node at this position on each iteration:
@@ -1021,11 +1029,15 @@ var SvgView = View.extend(new function() {
                     node.insertBefore(childNode, current || null);
                 index++;
             }
+            // Before the sweep below, so that a child which has just become
+            // the clip item is moved into its clipPath rather than left
+            // trailing among its siblings - where the sweep would take it for
+            // a removed item and throw its node away.
+            this._setClip(owner, node, clipItem);
             // Anything left after the last child is no longer part of the
             // scene graph.
             while (childNodes.length > index)
                 this._disposeNode(childNodes[index]);
-            this._setClip(owner, node, clipItem);
         },
 
         _setClip: function(owner, node, clipItem) {

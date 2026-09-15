@@ -944,6 +944,92 @@ test('A clip item is clipped by the rule it asks for', function() {
     equals(node.getAttribute('fill-rule'), null, 'Along with fill-rule');
 });
 
+test('With two clip masks, the first one clips and the rest are drawn',
+function() {
+    // Group#_getClipItem() takes the first child with _clipMask and leaves
+    // every other one to be drawn normally, which is what the canvas renderer
+    // paints - so the SVG renderer asks it rather than deciding again.
+    var scope = createSvgScope();
+    var first = new scope.Path.Circle({ center: [30, 30], radius: 20 }),
+        second = new scope.Path.Rectangle({ point: [0, 0], size: [10, 10] }),
+        painted = new scope.Path.Rectangle({ point: [50, 50], size: [10, 10],
+            fillColor: 'red' }),
+        group = new scope.Group([first, second, painted]);
+    first.clipMask = true;
+    second.clipMask = true;
+    scope.view.update();
+    equals(group._getClipItem(), first, 'The first of them is the clip item');
+    var clipPath = scope.view.element.querySelector('clipPath');
+    equals(clipPath.childNodes.length, 1, 'A single clip is defined');
+    equals(clipPath.firstChild.getAttribute('d'), first.getPathData(null, 5),
+            'Built from that first child');
+    equals(nodeFor(scope, group).childNodes.length, 2,
+            'And the other two are drawn as ordinary children');
+    // Clearing the first hands the role to the next one along, as it does on
+    // canvas - Group#_getClipItem() re-reads the children.
+    first.clipMask = false;
+    scope.view.update();
+    equals(group._getClipItem(), second, 'Clearing the first promotes the next');
+    equals(scope.view.element.querySelector('clipPath').firstChild
+            .getAttribute('d'), second.getPathData(null, 5),
+            'Which is what the clipPath is rebuilt from');
+    equals(nodeFor(scope, group).childNodes.length, 2,
+            'And the demoted one becomes a child again');
+});
+
+test('Promoting an existing child to clip mask keeps its node', function() {
+    // The clip item is skipped in the walk that positions the siblings, so it
+    // ends up trailing them - and the sweep that follows takes whatever is
+    // left past the last child for a removed item. It has to be moved into
+    // its clipPath before that runs, or its node is thrown away and the group
+    // ends up clipped by an empty path, which hides everything.
+    var scope = createSvgScope();
+    var mask = new scope.Path.Circle({ center: [50, 50], radius: 20 }),
+        painted = new scope.Path.Rectangle({ point: [0, 0], size: [100, 100],
+            fillColor: 'red' }),
+        group = new scope.Group([mask, painted]);
+    scope.view.update();
+    var maskNode = nodeFor(scope, mask);
+    equals(nodeFor(scope, group).childNodes.length, 2,
+            'Both start out as ordinary children');
+
+    mask.clipMask = true;
+    scope.view.update();
+    var clipPath = scope.view.element.querySelector('clipPath');
+    equals(clipPath != null, true, 'Setting clipMask defines a clipPath');
+    equals(nodeFor(scope, mask), maskNode, 'The item keeps the node it had');
+    equals(clipPath.firstChild, maskNode, 'Which moved into the clipPath');
+    equals(clipPath.firstChild.getAttribute('d'), mask.getPathData(null, 5),
+            'With its geometry intact, rather than an empty path');
+    equals(nodeFor(scope, group).childNodes.length, 1,
+            'And out of the sibling list');
+
+    mask.clipMask = false;
+    scope.view.update();
+    equals(nodeFor(scope, mask), maskNode, 'Clearing it again reuses it too');
+    equals(nodeFor(scope, group).childNodes[0], maskNode,
+            'And puts it back among its siblings, in order');
+    equals(scope.view.element.querySelectorAll('clipPath').length, 0,
+            'The definition is gone');
+});
+
+test('A project is not clipped by a layer', function() {
+    // Project#draw() draws its children and nothing else, so a clip-masked
+    // layer clips nothing on canvas. The content group follows suit, rather
+    // than defining a clipPath keyed on a project, which has no id to key on.
+    var scope = createSvgScope();
+    var layer = scope.project.activeLayer;
+    new scope.Path.Circle({ center: [50, 50], radius: 20, fillColor: 'red' });
+    layer.clipMask = true;
+    scope.view.update();
+    equals(scope.view.element.querySelectorAll('clipPath').length, 0,
+            'No clipPath is defined for the project');
+    equals(contentNode(scope).getAttribute('clip-path'), null,
+            'And the content group references none');
+    equals(contentNode(scope).childNodes.length, 1,
+            'The layer is still rendered');
+});
+
 test('Removing a view leaves nothing behind', function() {
     var scope = createSvgScope();
     new scope.Path.Circle({ center: [50, 50], radius: 20,
@@ -1856,31 +1942,6 @@ test('Serializing a project does not mention the renderer', function() {
 // ---------------------------------------------------------------------------
 
 QUnit.module('SvgView divergences', { teardown: svgViewTeardown });
-
-test('GAP 2: the last clipMask child wins, not the first', function() {
-    // Group#_getClipItem() takes the FIRST child with _clipMask set and draws
-    // every other child normally, the second clip mask included. The renderer
-    // pulls every clipMask child out of the sibling list and keeps whichever
-    // came last, so two of them clip by the wrong one and drop the other.
-    var scope = createSvgScope();
-    var first = new scope.Path.Circle({ center: [30, 30], radius: 20 }),
-        second = new scope.Path.Rectangle({ point: [0, 0], size: [10, 10] }),
-        painted = new scope.Path.Rectangle({ point: [50, 50], size: [10, 10],
-            fillColor: 'red' }),
-        group = new scope.Group([first, second, painted]);
-    first.clipMask = true;
-    second.clipMask = true;
-    scope.view.update();
-    equals(group._getClipItem(), first,
-            'The canvas renderer clips by the first of them');
-    var clipPath = scope.view.element.querySelector('clipPath');
-    equals(clipPath.childNodes.length, 1, 'The SVG one defines a single clip');
-    equals(clipPath.firstChild.getAttribute('d'),
-            second.getPathData(null, 5),
-            'GAP: built from the last clipMask child rather than the first');
-    equals(nodeFor(scope, group).childNodes.length, 1,
-            'GAP: and the other one is dropped, where canvas would draw it');
-});
 
 test('GAP 3: Raster#smoothing only applies on a geometry change', function() {
     // Raster#setSmoothing() reports Change.ATTRIBUTE, which the renderer routes
